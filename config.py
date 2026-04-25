@@ -1,9 +1,16 @@
-from pydantic_settings import BaseSettings
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore"
+    )
 
     # Bot Configuration
     BOT_TOKEN: str
@@ -12,14 +19,6 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str
-    # Fix Railway.io postgres:// -> postgresql+asyncpg://
-    @property
-    def ASYNC_DATABASE_URL(self) -> str:
-        """Convert DATABASE_URL to async PostgreSQL URL if needed."""
-        url = self.DATABASE_URL
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
-        return url
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -47,9 +46,23 @@ class Settings(BaseSettings):
     FORCE_SUBSCRIPTION: bool = True
     MAINTENANCE_MODE: bool = False
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    @field_validator("SUPER_ADMIN_IDS", mode="before")
+    @classmethod
+    def parse_super_admin_ids(cls, v: str | list[int]) -> list[int]:
+        """Parse comma-separated admin IDs."""
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            return [int(x.strip()) for x in v.split(",")]
+        return []
+
+    @property
+    def ASYNC_DATABASE_URL(self) -> str:
+        """Convert DATABASE_URL to async PostgreSQL URL if needed."""
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        return url
 
     def has_userbot(self) -> bool:
         """Check if userbot credentials are configured."""
@@ -58,23 +71,6 @@ class Settings(BaseSettings):
             and self.API_HASH
             and self.USERBOT_SESSION_STRING
         )
-
-    def parse_super_admin_ids(self, value: str | list[int]) -> list[int]:
-        """Parse comma-separated admin IDs."""
-        if isinstance(value, list):
-            return value
-        if isinstance(value, str):
-            return [int(x.strip()) for x in value.split(",")]
-        return []
-
-    @classmethod
-    def settings_customise_sources(cls, settings_cls, init_settings, env_settings, dotenv_settings, file_settings):
-        # Override SUPER_ADMIN_IDS parsing
-        if "SUPER_ADMIN_IDS" in env_settings and isinstance(env_settings["SUPER_ADMIN_IDS"], str):
-            env_settings["SUPER_ADMIN_IDS"] = [
-                int(x.strip()) for x in env_settings["SUPER_ADMIN_IDS"].split(",")
-            ]
-        return init_settings, env_settings, dotenv_settings, file_settings
 
 
 # Global settings instance
