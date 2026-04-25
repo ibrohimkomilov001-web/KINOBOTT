@@ -5,35 +5,3 @@ builder = "dockerfile"
 restartPolicyType = "always"
 restartPolicyMaxRetries = 5
 
-[[services]]
-name = "postgres"
-image = "postgres:16-alpine"
-environment = [
-  "POSTGRES_USER=kinobot_user",
-  "POSTGRES_PASSWORD=$POSTGRES_PASSWORD",
-  "POSTGRES_DB=kinobot_db",
-]
-volumes = [
-  { mountPath = "/var/lib/postgresql/data", name = "postgres_data" }
-]
-healthCheck = { command = "pg_isready -U kinobot_user -d kinobot_db", interval = 10 }
-
-[[services]]
-name = "redis"
-image = "redis:7-alpine"
-volumes = [
-  { mountPath = "/data", name = "redis_data" }
-]
-healthCheck = { command = "redis-cli ping", interval = 10 }
-
-[[volumes]]
-name = "postgres_data"
-size = 1
-
-[[volumes]]
-name = "redis_data"
-size = 1
-
-[[volumes]]
-name = "userbot_session"
-size = 1

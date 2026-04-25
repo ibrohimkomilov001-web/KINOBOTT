@@ -64,6 +64,13 @@ class Settings(BaseSettings):
             url = url.replace("postgres://", "postgresql+asyncpg://", 1)
         elif url.startswith("postgresql://"):
             url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        
+        # Log the async URL (without credentials for security)
+        import logging
+        logger = logging.getLogger(__name__)
+        safe_url = url.split("@")[-1] if "@" in url else url
+        logger.info(f"Using database URL: {safe_url}")
+        
         return url
 
     def has_userbot(self) -> bool:
