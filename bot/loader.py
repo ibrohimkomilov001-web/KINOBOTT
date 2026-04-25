@@ -2,7 +2,7 @@ from aiogram import Dispatcher, Bot, Router
 from aiogram.fsm.storage.redis import RedisStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-import aioredis
+import redis.asyncio as redis
 from config import settings
 import logging
 
@@ -17,8 +17,8 @@ bot = Bot(
 # Redis storage for FSM
 async def create_redis_storage():
     """Create Redis storage for FSM."""
-    redis = await aioredis.from_url(settings.REDIS_URL)
-    return RedisStorage(redis=redis)
+    redis_conn = redis.from_url(settings.REDIS_URL)
+    return RedisStorage(redis=redis_conn)
 
 # Dispatcher
 async def setup_dispatcher():
