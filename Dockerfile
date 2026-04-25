@@ -6,8 +6,10 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     postgresql-client \
-    python3-setuptools \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies with setuptools
+RUN pip install --no-cache-dir setuptools
 
 # Copy project files
 COPY pyproject.toml .
