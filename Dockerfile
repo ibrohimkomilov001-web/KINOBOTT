@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     postgresql-client \
+    python3-setuptools \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy project files
