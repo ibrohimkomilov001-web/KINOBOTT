@@ -2,17 +2,34 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 def broadcast_controls(broadcast_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(text="Boshlash", callback_data=f"bc_start:{broadcast_id}"))
-    kb.add(InlineKeyboardButton(text="To'xtatish", callback_data=f"bc_pause:{broadcast_id}"))
-    kb.add(InlineKeyboardButton(text="Davom ettirish", callback_data=f"bc_resume:{broadcast_id}"))
-    kb.add(InlineKeyboardButton(text="Bekor qilish", callback_data=f"bc_cancel:{broadcast_id}"))
-    return kb
+    """Broadcast control buttons."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="▶️ Boshlash", callback_data=f"bc_start:{broadcast_id}")],
+        [
+            InlineKeyboardButton(text="⏸ To'xtatish", callback_data=f"bc_pause:{broadcast_id}"),
+            InlineKeyboardButton(text="▶ Davom", callback_data=f"bc_resume:{broadcast_id}"),
+        ],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"bc_cancel:{broadcast_id}")],
+    ])
 
 
 def admin_main_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton(text="Kontent qo'shish", callback_data="admin_add_content"))
-    kb.add(InlineKeyboardButton(text="Broadcast yaratish", callback_data="admin_create_broadcast"))
-    kb.add(InlineKeyboardButton(text="Statistika", callback_data="admin_stats"))
-    return kb
+    """Admin main panel keyboard."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎬 Kino qo'shish", callback_data="admin_add_movie")],
+        [InlineKeyboardButton(text="📺 Serial qo'shish", callback_data="admin_add_series")],
+        [InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_create_broadcast")],
+        [InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="📋 Kanallar", callback_data="admin_channels")],
+        [InlineKeyboardButton(text="👥 Adminlar", callback_data="admin_manage_admins")],
+    ])
+
+
+def confirm_kb(prefix: str) -> InlineKeyboardMarkup:
+    """Generic confirm/cancel keyboard."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"{prefix}_confirm"),
+            InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"{prefix}_cancel"),
+        ]
+    ])

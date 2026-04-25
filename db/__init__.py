@@ -1,4 +1,4 @@
-from .base import Base, AsyncSessionLocal, engine, init_db
+from .base import Base, AsyncSessionLocal, engine
 from .models import (
     User,
     Admin,
@@ -20,7 +20,6 @@ __all__ = [
     "Base",
     "AsyncSessionLocal",
     "engine",
-    "init_db",
     "User",
     "Admin",
     "Channel",

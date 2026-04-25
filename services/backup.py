@@ -5,6 +5,7 @@ import json
 import gzip
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.repositories.channel_repo import ChannelRepository
 from db.repositories.settings_repo import SettingsRepository
@@ -119,5 +120,3 @@ class BackupService:
             await self.session.rollback()
             return False
 
-
-from typing import Optional

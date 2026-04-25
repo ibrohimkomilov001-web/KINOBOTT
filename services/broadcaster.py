@@ -44,25 +44,39 @@ class BroadcastEngine:
         await self.session.commit()
 
         # Create tasks for workers
-        queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue()
         for user_id in users:
             await queue.put(user_id)
 
+        # Add sentinel values to stop workers
+        for _ in range(worker_count):
+            await queue.put(None)
+
         # Run workers
         workers = [
-            asyncio.create_task(self._worker(broadcast_id, queue, admin_chat_id))
+            asyncio.create_task(self._worker(broadcast_id, broadcast, queue))
             for _ in range(worker_count)
         ]
 
-        # Wait for all to complete
-        await queue.join()
-        for worker in workers:
-            await worker
+        # Wait for all workers to complete
+        await asyncio.gather(*workers)
 
         # Complete broadcast
         broadcast = await self.broadcast_repo.get_by_id(broadcast_id)
         await self.broadcast_repo.complete_broadcast(broadcast_id)
         await self.session.commit()
+
+        # Notify admin
+        try:
+            await self.bot.send_message(
+                admin_chat_id,
+                f"✅ Broadcast #{broadcast_id} tugallandi!\n"
+                f"Yuborildi: {broadcast.sent_count}\n"
+                f"Xatolik: {broadcast.failed_count}\n"
+                f"Bloklangan: {broadcast.blocked_count}",
+            )
+        except Exception:
+            pass
 
         logger.info(
             f"Broadcast {broadcast_id} completed. "
@@ -70,39 +84,26 @@ class BroadcastEngine:
         )
         return True
 
-    async def _worker(self, broadcast_id: int, queue: asyncio.Queue, admin_chat_id: int):
+    async def _worker(self, broadcast_id: int, broadcast: models.Broadcast, queue: asyncio.Queue):
         """Worker task that sends messages."""
-        broadcast = await self.broadcast_repo.get_by_id(broadcast_id)
-        rate_limit = 1.0 / self.bot_rate  # Delay between messages
+        rate_limit = 1.0 / self.bot_rate
 
         while True:
-            try:
-                user_id = queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+            user_id = await queue.get()
+            if user_id is None:
+                break  # Sentinel received, stop worker
 
             try:
-                # Get user
-                user = await self.user_repo.get_by_id(user_id)
-                if not user or user.is_banned or user.is_bot_blocked:
-                    await self.broadcast_repo.increment_blocked(broadcast_id)
-                    queue.task_done()
-                    continue
-
-                # Send message
                 success = await self._send_message(broadcast, user_id)
                 if success:
                     await self.broadcast_repo.increment_sent(broadcast_id)
                 else:
                     await self.broadcast_repo.increment_failed(broadcast_id)
-
             except Exception as e:
                 logger.error(f"Error sending to user {user_id}: {e}")
                 await self.broadcast_repo.increment_failed(broadcast_id)
-
             finally:
-                queue.task_done()
-                await asyncio.sleep(rate_limit)  # Rate limiting
+                await asyncio.sleep(rate_limit)
 
     async def _send_message(self, broadcast: models.Broadcast, user_id: int) -> bool:
         """Send broadcast message to user."""

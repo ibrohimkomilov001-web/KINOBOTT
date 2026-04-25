@@ -6,7 +6,6 @@ from sqlalchemy import (
     Enum, func
 )
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.ext.declarative import declarative_base
 import enum
 from .base import Base
 

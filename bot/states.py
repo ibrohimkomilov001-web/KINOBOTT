@@ -67,6 +67,12 @@ class BroadcastSG(StatesGroup):
     confirm = State()
 
 
+class AddAdminSG(StatesGroup):
+    """States for adding an admin."""
+    
+    user_input = State()
+
+
 class SearchSG(StatesGroup):
     """States for search interaction."""
     

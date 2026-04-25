@@ -1,8 +1,7 @@
 from aiogram import Dispatcher, Bot, Router
-from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-import redis.asyncio as redis
 from config import settings
 import logging
 
@@ -14,31 +13,34 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 
-# Redis storage for FSM
-async def create_redis_storage():
-    """Create Redis storage for FSM."""
-    redis_conn = redis.from_url(settings.FIXED_REDIS_URL)
-    return RedisStorage(redis=redis_conn)
 
-# Dispatcher
+async def create_storage():
+    """Create FSM storage. Prefer Redis, fallback to Memory."""
+    redis_url = settings.FIXED_REDIS_URL
+    if redis_url:
+        try:
+            from aiogram.fsm.storage.redis import RedisStorage
+            import redis.asyncio as aioredis
+            redis_conn = aioredis.from_url(redis_url)
+            await redis_conn.ping()
+            logger.info("✓ Redis storage connected")
+            return RedisStorage(redis=redis_conn)
+        except Exception as e:
+            logger.warning(f"Redis unavailable ({e}), falling back to MemoryStorage")
+    return MemoryStorage()
+
+
 async def setup_dispatcher():
-    """Setup dispatcher with middlewares."""
-    # Create storage
-    storage = await create_redis_storage()
-    
-    # Create dispatcher
+    """Setup dispatcher with storage."""
+    storage = await create_storage()
     dp = Dispatcher(storage=storage)
-    
     logger.info("✓ Dispatcher created")
     return dp
 
-# Main router for handlers
+
+# Main router (unused, each handler file defines its own)
 router = Router()
 
-async def setup_handlers():
-    """Setup all handlers and routers."""
-    # Will be populated by handlers from Phase 4+
-    logger.info("✓ Handlers setup complete")
 
 async def close_bot():
     """Close bot session."""

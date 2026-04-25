@@ -2,25 +2,8 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 import logging
-import os
 
-# Setup basic logging to see environment info
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-# Log ALL environment variables for debugging
-logger.info("=" * 80)
-logger.info("ALL Environment Variables:")
-for key in sorted(os.environ.keys()):
-    value = os.environ[key]
-    # Hide sensitive values
-    if any(x in key.upper() for x in ['PASSWORD', 'TOKEN', 'SECRET', 'PASS', 'KEY', 'CREDENTIAL']):
-        value = '***HIDDEN***' if len(value) > 0 else value
-    if len(value) < 200:
-        logger.info(f"  {key}={value}")
-    else:
-        logger.info(f"  {key}={value[:100]}...{value[-50:]}")
-logger.info("=" * 80)
 
 
 class Settings(BaseSettings):
@@ -37,11 +20,18 @@ class Settings(BaseSettings):
     BOT_USERNAME: str
     SUPER_ADMIN_IDS: list[int]
 
-    # Database
+    # Database - optional, will be built from plugin vars if available
     DATABASE_URL: Optional[str] = None
+    PGHOST: Optional[str] = None
+    PGPORT: Optional[int] = None
+    PGUSER: Optional[str] = None
+    PGPASSWORD: Optional[str] = None
+    PGDATABASE: Optional[str] = None
 
     # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
+    REDIS_URL: Optional[str] = None
+    REDIS_HOST: Optional[str] = None
+    REDIS_PORT: int = 6379
 
     # Userbot (Pyrogram) - Optional
     API_ID: Optional[int] = None
@@ -49,9 +39,9 @@ class Settings(BaseSettings):
     USERBOT_SESSION_STRING: Optional[str] = None
 
     # Telegram Channels/Groups
-    BASE_CHANNEL_ID: int
-    LOG_CHANNEL_ID: int
-    COMMENT_GROUP_ID: int
+    BASE_CHANNEL_ID: Optional[int] = None
+    LOG_CHANNEL_ID: Optional[int] = None
+    COMMENT_GROUP_ID: Optional[int] = None
 
     # Broadcast Settings
     BROADCAST_BOT_RATE: int = 28  # requests per second
@@ -65,6 +55,22 @@ class Settings(BaseSettings):
     # Feature Flags
     FORCE_SUBSCRIPTION: bool = True
     MAINTENANCE_MODE: bool = False
+
+    @field_validator("API_ID", "BASE_CHANNEL_ID", "LOG_CHANNEL_ID", "COMMENT_GROUP_ID", mode="before")
+    @classmethod
+    def parse_optional_int(cls, v):
+        """Convert empty strings to None for optional int fields."""
+        if v is None or v == "" or v == "0":
+            return None
+        return v
+
+    @field_validator("API_HASH", "USERBOT_SESSION_STRING", mode="before")
+    @classmethod
+    def parse_optional_str(cls, v):
+        """Convert empty strings to None for optional string fields."""
+        if v is None or v == "":
+            return None
+        return v
 
     @field_validator("SUPER_ADMIN_IDS", mode="before")
     @classmethod
@@ -110,13 +116,14 @@ class Settings(BaseSettings):
         )
 
     @property
-    def FIXED_REDIS_URL(self) -> str:
+    def FIXED_REDIS_URL(self) -> Optional[str]:
         """Fix localhost in REDIS_URL for Railway environment."""
         url = self.REDIS_URL
+        if not url:
+            return None
         if "localhost" in url:
             logger.warning("Detected localhost in REDIS_URL, converting to Railway service name")
             url = url.replace("localhost", "redis")
-            logger.info(f"Using Redis URL: {url}")
         return url
 
 

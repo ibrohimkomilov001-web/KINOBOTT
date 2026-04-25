@@ -15,8 +15,8 @@ engine = create_async_engine(
     future=True,
     pool_size=20,
     max_overflow=30,
-    pool_pre_ping=True,  # Verify connections before using
-    pool_recycle=3600,  # Recycle connections after 1 hour
+    pool_pre_ping=True,
+    pool_recycle=3600,
 )
 
 # Session factory
@@ -32,11 +32,3 @@ async def get_session() -> AsyncSession:
     """Get a database session."""
     async with AsyncSessionLocal() as session:
         yield session
-
-
-async def init_db():
-    """Initialize database schema."""
-    async with engine.begin() as conn:
-        # Create all tables
-        await conn.run_sync(Base.metadata.create_all)
-        logger.info("Database schema created/verified")

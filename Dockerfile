@@ -8,25 +8,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies with setuptools
-RUN pip install --no-cache-dir setuptools
-
-# Copy project files
-COPY pyproject.toml .
-COPY main.py .
-COPY config.py .
-
-# Create necessary directories
-RUN mkdir -p bot db services utils
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -e .
+# Install Python dependencies first (cached layer)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
+COPY main.py .
+COPY config.py .
 COPY bot/ ./bot/
 COPY db/ ./db/
 COPY services/ ./services/
 COPY utils/ ./utils/
+
+# Create data directories
+RUN mkdir -p data backups
 
 # Run bot
 CMD ["python", "-u", "main.py"]
