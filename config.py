@@ -12,11 +12,11 @@ logger = logging.getLogger(__name__)
 logger.info("=" * 60)
 logger.info("Environment Variables:")
 for key in sorted(os.environ.keys()):
-    if any(x in key for x in ['DATABASE', 'REDIS', 'POSTGRES', 'DB', 'URL']):
+    if any(x in key.upper() for x in ['DATABASE', 'REDIS', 'POSTGRES', 'DB', 'URL', 'PG', 'PGUSER', 'PGPASS']):
         value = os.environ[key]
         # Hide sensitive values
-        if any(x in key for x in ['PASSWORD', 'TOKEN', 'SECRET']):
-            value = '***HIDDEN***'
+        if any(x in key.upper() for x in ['PASSWORD', 'TOKEN', 'SECRET', 'PASS', 'KEY']):
+            value = '***HIDDEN***' if len(value) > 0 else value
         logger.info(f"  {key}={value}")
 logger.info("=" * 60)
 
