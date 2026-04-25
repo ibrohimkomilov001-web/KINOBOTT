@@ -8,17 +8,19 @@ import os
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Log environment variables for debugging
-logger.info("=" * 60)
-logger.info("Environment Variables:")
+# Log ALL environment variables for debugging
+logger.info("=" * 80)
+logger.info("ALL Environment Variables:")
 for key in sorted(os.environ.keys()):
-    if any(x in key.upper() for x in ['DATABASE', 'REDIS', 'POSTGRES', 'DB', 'URL', 'PG', 'PGUSER', 'PGPASS']):
-        value = os.environ[key]
-        # Hide sensitive values
-        if any(x in key.upper() for x in ['PASSWORD', 'TOKEN', 'SECRET', 'PASS', 'KEY']):
-            value = '***HIDDEN***' if len(value) > 0 else value
+    value = os.environ[key]
+    # Hide sensitive values
+    if any(x in key.upper() for x in ['PASSWORD', 'TOKEN', 'SECRET', 'PASS', 'KEY', 'CREDENTIAL']):
+        value = '***HIDDEN***' if len(value) > 0 else value
+    if len(value) < 200:
         logger.info(f"  {key}={value}")
-logger.info("=" * 60)
+    else:
+        logger.info(f"  {key}={value[:100]}...{value[-50:]}")
+logger.info("=" * 80)
 
 
 class Settings(BaseSettings):
