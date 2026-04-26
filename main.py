@@ -18,6 +18,7 @@ from bot.handlers import user_callbacks
 from bot.handlers import fsm_handlers
 from bot.handlers import user as user_handlers
 from bot.handlers import inline as inline_handlers
+from bot.handlers import channel_events as channel_events_handlers
 
 logger = setup_logging()
 
@@ -78,6 +79,7 @@ async def main():
     # Include routers (order matters: admin/fsm first, then specific, then catch-all user last)
     dp.include_router(admin_handlers.router)
     dp.include_router(fsm_handlers.router)
+    dp.include_router(channel_events_handlers.router)
     dp.include_router(user_callbacks.router)
     dp.include_router(inline_handlers.router)
     dp.include_router(user_handlers.router)

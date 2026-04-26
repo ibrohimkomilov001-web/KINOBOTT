@@ -36,6 +36,10 @@ class BroadcastRepository:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
+    async def get_recent(self, limit: int = 20) -> List[models.Broadcast]:
+        """Get recent broadcasts (alias for get_all sorted by recency)."""
+        return await self.get_all(limit=limit)
+
     async def get_by_status(self, status: str, limit: int = 100) -> List[models.Broadcast]:
         """Get broadcasts by status."""
         stmt = select(models.Broadcast).where(

@@ -1,6 +1,7 @@
-"""Broadcast service with rate limiting and maximum API usage."""
+"""Broadcast service with rate limiting, real-time progress, maximum API usage."""
 
 import asyncio
+import time
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
@@ -29,23 +30,46 @@ class BroadcastEngine:
         self._cancelled = False
 
     def _build_keyboard(self, buttons_data) -> Optional[InlineKeyboardMarkup]:
-        """Build InlineKeyboardMarkup from JSON button data."""
+        """Build InlineKeyboardMarkup from JSON button data.
+
+        Supports two formats:
+        1. List of rows: [[{text, url}, {text, url}], [{text, url}]]
+        2. Flat list (legacy): [{text, url}, {text, url}]
+        """
         if not buttons_data:
             return None
         builder = InlineKeyboardBuilder()
-        for btn in buttons_data:
-            if isinstance(btn, dict):
-                text = btn.get("text", "")
-                url = btn.get("url")
-                cb = btn.get("callback_data")
-                if url:
-                    builder.row(InlineKeyboardButton(text=text, url=url))
-                elif cb:
-                    builder.row(InlineKeyboardButton(text=text, callback_data=cb))
+
+        if isinstance(buttons_data, list) and buttons_data and isinstance(buttons_data[0], list):
+            # New format: list of rows
+            for row in buttons_data:
+                row_buttons = []
+                for btn in row:
+                    if not isinstance(btn, dict):
+                        continue
+                    if btn.get("url"):
+                        row_buttons.append(InlineKeyboardButton(text=btn.get("text", ""), url=btn["url"]))
+                    elif btn.get("callback_data"):
+                        row_buttons.append(InlineKeyboardButton(text=btn.get("text", ""), callback_data=btn["callback_data"]))
+                if row_buttons:
+                    builder.row(*row_buttons)
+        else:
+            # Legacy: flat list, 1 button per row
+            for btn in buttons_data:
+                if not isinstance(btn, dict):
+                    continue
+                if btn.get("url"):
+                    builder.row(InlineKeyboardButton(text=btn.get("text", ""), url=btn["url"]))
+                elif btn.get("callback_data"):
+                    builder.row(InlineKeyboardButton(text=btn.get("text", ""), callback_data=btn["callback_data"]))
+
         return builder.as_markup() if buttons_data else None
 
-    async def start(self, broadcast_id: int, admin_chat_id: int, worker_count: int = 3) -> bool:
-        """Start a broadcast with worker pool."""
+    async def start(self, broadcast_id: int, admin_chat_id: int,
+                    worker_count: int = 3,
+                    progress_chat_id: Optional[int] = None,
+                    progress_message_id: Optional[int] = None) -> bool:
+        """Start a broadcast with worker pool and real-time progress updates."""
         broadcast = await self.broadcast_repo.get_by_id(broadcast_id)
         if not broadcast:
             logger.error(f"Broadcast {broadcast_id} not found")
@@ -67,17 +91,49 @@ class BroadcastEngine:
         for _ in range(worker_count):
             await queue.put(None)
 
+        # Progress updater task (every 5 seconds)
+        progress_task = None
+        if progress_chat_id and progress_message_id:
+            progress_task = asyncio.create_task(
+                self._progress_updater(broadcast_id, progress_chat_id, progress_message_id)
+            )
+
         workers = [
             asyncio.create_task(self._worker(broadcast_id, broadcast, queue))
             for _ in range(worker_count)
         ]
         await asyncio.gather(*workers)
 
+        # Stop progress updater
+        if progress_task:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
+
         # Finalize
         broadcast = await self.broadcast_repo.get_by_id(broadcast_id)
         if broadcast.status != BroadcastStatus.FAILED.value:
             await self.broadcast_repo.complete_broadcast(broadcast_id)
         await self.session.commit()
+
+        # Final progress update
+        if progress_chat_id and progress_message_id:
+            try:
+                await self.bot.edit_message_text(
+                    chat_id=progress_chat_id,
+                    message_id=progress_message_id,
+                    text=(
+                        f"✅ <b>Broadcast #{broadcast_id} tugallandi</b>\n\n"
+                        f"📤 Yuborildi: <b>{broadcast.sent_count}</b>\n"
+                        f"❌ Xatolik: {broadcast.failed_count}\n"
+                        f"🚫 Bloklangan: {broadcast.blocked_count}\n"
+                        f"🎯 Maqsad: {broadcast.target_count}"
+                    )
+                )
+            except Exception:
+                pass
 
         # Report to admin
         try:
@@ -98,6 +154,36 @@ class BroadcastEngine:
         )
         return True
 
+    async def _progress_updater(self, broadcast_id: int, chat_id: int, message_id: int):
+        """Periodically update progress message every 5 seconds."""
+        from bot.keyboards.admin import broadcast_controls
+        try:
+            while True:
+                await asyncio.sleep(5)
+                try:
+                    bc = await self.broadcast_repo.get_by_id(broadcast_id)
+                    if not bc or bc.status in (BroadcastStatus.COMPLETED.value, BroadcastStatus.FAILED.value):
+                        break
+                    pct = (bc.sent_count + bc.failed_count) * 100 // max(bc.target_count, 1)
+                    text = (
+                        f"🚀 <b>Broadcast #{broadcast_id}</b> ({bc.status})\n\n"
+                        f"📤 Yuborildi: <b>{bc.sent_count}</b> / {bc.target_count} ({pct}%)\n"
+                        f"❌ Xato: {bc.failed_count}\n"
+                        f"🚫 Block: {bc.blocked_count}"
+                    )
+                    await self.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=text,
+                        reply_markup=broadcast_controls(broadcast_id)
+                    )
+                except TelegramBadRequest:
+                    pass  # Message not modified
+                except Exception as e:
+                    logger.debug(f"progress update: {e}")
+        except asyncio.CancelledError:
+            raise
+
     async def _worker(self, broadcast_id: int, broadcast: models.Broadcast, queue: asyncio.Queue):
         """Worker — rate limited message sender."""
         rate_limit = 1.0 / self.bot_rate
@@ -113,7 +199,6 @@ class BroadcastEngine:
             # Check if broadcast paused/cancelled
             bc = await self.broadcast_repo.get_by_id(broadcast_id)
             if bc and bc.status == BroadcastStatus.PAUSED.value:
-                # Wait until resumed or cancelled
                 while True:
                     await asyncio.sleep(2)
                     bc = await self.broadcast_repo.get_by_id(broadcast_id)
@@ -142,15 +227,7 @@ class BroadcastEngine:
         try:
             kb = self._build_keyboard(broadcast.buttons)
             text = broadcast.text or ""
-
-            if broadcast.mode == "forward":
-                # Forward requires source chat_id + message_id stored in text as JSON
-                # For now fallback to copy behavior
-                return await self._send_custom(user_id, text, broadcast, kb)
-            elif broadcast.mode == "copy":
-                return await self._send_custom(user_id, text, broadcast, kb)
-            else:
-                return await self._send_custom(user_id, text, broadcast, kb)
+            return await self._send_custom(user_id, text, broadcast, kb)
 
         except TelegramForbiddenError:
             await self.user_repo.mark_blocked(user_id)
@@ -165,7 +242,6 @@ class BroadcastEngine:
             return False
         except TelegramAPIError as e:
             if "flood" in str(e).lower():
-                # Respect flood wait
                 import re
                 match = re.search(r"(\d+)", str(e))
                 wait = int(match.group(1)) if match else 5

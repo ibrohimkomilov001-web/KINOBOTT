@@ -40,6 +40,10 @@ class SubscriptionMiddleware(BaseMiddleware):
             tg_user = event.callback_query.from_user
             target = event.callback_query
 
+        # chat_join_request, chat_member, my_chat_member, inline_query — bypass subscription check
+        if not target:
+            return await handler(event, data)
+
         if not tg_user or not session:
             return await handler(event, data)
 

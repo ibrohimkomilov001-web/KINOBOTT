@@ -14,11 +14,15 @@ from db.repositories.settings_repo import SettingsRepository
 from db.constants import AdminRole
 from bot.states import (
     AddMovieSG, AddSeriesSG, AddSeasonSG, AddEpisodeSG,
-    AddChannelSG, BroadcastSG, AddAdminSG, SettingsSG, AdSG,
+    AddChannelSG, BroadcastSG, AddAdminSG, SettingsSG,
+    EditMovieSG, EditSeriesSG, SearchMovieSG,
 )
 from bot.keyboards.admin import (
     confirm_kb, skip_kb, broadcast_after_content_kb,
-    broadcast_segment_kb, broadcast_confirm_kb, broadcast_controls,
+    broadcast_segment_kb, broadcast_custom_segment_kb,
+    broadcast_confirm_kb, broadcast_controls,
+    channel_type_kb, channel_required_kb,
+    movie_list_kb, movie_detail_kb, series_list_kb,
     admin_main_reply_kb, parse_buttons_text,
 )
 import logging
@@ -35,7 +39,6 @@ router = Router()
 
 @router.message(AddMovieSG.video)
 async def fsm_movie_video(message: Message, state: FSMContext):
-    """1) Video yoki fayl qabul qilish."""
     file_id = None
     if message.video:
         file_id = message.video.file_id
@@ -45,7 +48,6 @@ async def fsm_movie_video(message: Message, state: FSMContext):
         await message.reply("Video yoki fayl yuboring:")
         return
     await state.update_data(file_id=file_id)
-    # Auto-kod tavsiya
     await message.reply(
         "Kino kodi — keyingi avtomatik kod tayyor.\n"
         "Avto kod uchun ⏩ O'tkazish bosing yoki o'zingiz kiriting:",
@@ -56,7 +58,6 @@ async def fsm_movie_video(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "auto_code", AddMovieSG.code)
 async def fsm_movie_auto_code(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
-    """Auto-kod tayinlash."""
     code = "1"
     if session:
         repo = MovieRepository(session)
@@ -69,7 +70,6 @@ async def fsm_movie_auto_code(call: CallbackQuery, state: FSMContext, session: A
 
 @router.message(AddMovieSG.code)
 async def fsm_movie_code(message: Message, state: FSMContext, session: AsyncSession | None = None):
-    """Qo'lda kod kiritish."""
     code = message.text.strip()
     if session:
         repo = MovieRepository(session)
@@ -136,7 +136,6 @@ async def fsm_movie_confirm(call: CallbackQuery, state: FSMContext, session: Asy
     )
     await session.commit()
 
-    # Baza kanalga yuborish
     try:
         from bot.loader import bot
         from config import settings as app_settings
@@ -170,7 +169,81 @@ async def fsm_movie_cancel(call: CallbackQuery, state: FSMContext):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SERIAL QO'SHISH FSM  (nom → kod → tavsif → tasdiqlash)
+# KINO TAHRIRLASH FSM
+# ════════════════════════════════════════════════════════════════════════════
+
+@router.message(EditMovieSG.value)
+async def fsm_movie_edit_value(message: Message, state: FSMContext, session: AsyncSession | None = None):
+    if not session:
+        await state.clear()
+        return
+    data = await state.get_data()
+    movie_id, field = data.get("movie_id"), data.get("field")
+    repo = MovieRepository(session)
+
+    update_value = None
+    if field == "video":
+        if message.video:
+            update_value = message.video.file_id
+        elif message.document:
+            update_value = message.document.file_id
+        else:
+            await message.reply("Video yoki fayl yuboring:")
+            return
+    elif field == "year":
+        try:
+            update_value = int(message.text.strip())
+        except (ValueError, AttributeError):
+            await message.reply("Yil — raqam (masalan: 2024):")
+            return
+    elif field == "genres":
+        update_value = [g.strip() for g in (message.text or "").split(",") if g.strip()]
+    elif field == "code":
+        new_code = (message.text or "").strip()
+        existing = await repo.get_by_code(new_code)
+        if existing and existing.id != movie_id:
+            await message.reply(f"❌ Kod <code>{new_code}</code> band. Boshqa kod kiriting:")
+            return
+        update_value = new_code
+    else:  # title, description
+        update_value = (message.text or "").strip()
+
+    await repo.update(movie_id, **{field: update_value})
+    await session.commit()
+    await message.reply(f"✅ <b>{field}</b> yangilandi.")
+    await state.clear()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# KINO QIDIRUV (admin)
+# ════════════════════════════════════════════════════════════════════════════
+
+@router.message(SearchMovieSG.query)
+async def fsm_movie_search(message: Message, state: FSMContext, session: AsyncSession | None = None):
+    if not session:
+        await state.clear()
+        return
+    query = (message.text or "").strip()
+    repo = MovieRepository(session)
+    movies = await repo.search(query, limit=20)
+    if not movies:
+        await message.reply("Hech narsa topilmadi.")
+        await state.clear()
+        return
+    # Use a custom inline keyboard with results
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    for m in movies:
+        builder.row(InlineKeyboardButton(
+            text=f"🎬 {m.code} — {m.title}",
+            callback_data=f"movie_view:{m.id}"
+        ))
+    await message.reply(f"🔍 <b>Natijalar:</b> {len(movies)} ta", reply_markup=builder.as_markup())
+    await state.clear()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SERIAL QO'SHISH FSM
 # ════════════════════════════════════════════════════════════════════════════
 
 @router.message(AddSeriesSG.title)
@@ -255,7 +328,45 @@ async def fsm_series_cancel(call: CallbackQuery, state: FSMContext):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# SEZON QO'SHISH  (serial tanlash → sezon raqami → tasdiqlash)
+# SERIAL TAHRIRLASH FSM
+# ════════════════════════════════════════════════════════════════════════════
+
+@router.message(EditSeriesSG.value)
+async def fsm_series_edit_value(message: Message, state: FSMContext, session: AsyncSession | None = None):
+    if not session:
+        await state.clear()
+        return
+    data = await state.get_data()
+    series_id, field = data.get("series_id"), data.get("field")
+    repo = SeriesRepository(session)
+
+    update_value = None
+    if field == "year":
+        try:
+            update_value = int(message.text.strip())
+        except (ValueError, AttributeError):
+            await message.reply("Yil — raqam:")
+            return
+    elif field == "genres":
+        update_value = [g.strip() for g in (message.text or "").split(",") if g.strip()]
+    elif field == "code":
+        new_code = (message.text or "").strip()
+        existing = await repo.get_by_code(new_code)
+        if existing and existing.id != series_id:
+            await message.reply(f"❌ Kod <code>{new_code}</code> band:")
+            return
+        update_value = new_code
+    else:
+        update_value = (message.text or "").strip()
+
+    await repo.update(series_id, **{field: update_value})
+    await session.commit()
+    await message.reply(f"✅ <b>{field}</b> yangilandi.")
+    await state.clear()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SEZON QO'SHISH
 # ════════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data.startswith("season_add:"))
@@ -285,7 +396,7 @@ async def fsm_season_number(message: Message, state: FSMContext, session: AsyncS
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# EPIZOD QO'SHISH  (serial → sezon → ep raqami → nom → video → tasdiqlash)
+# EPIZOD QO'SHISH
 # ════════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data.startswith("episode_add:"))
@@ -372,7 +483,6 @@ async def fsm_episode_video(message: Message, state: FSMContext, session: AsyncS
     )
     await session.commit()
 
-    # Baza kanalga yuborish
     try:
         from bot.loader import bot
         from config import settings as app_settings
@@ -394,67 +504,141 @@ async def fsm_episode_video(message: Message, state: FSMContext, session: AsyncS
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# KANAL QO'SHISH FSM  (chat_id → auto-detect → majburiy? → saqlash)
+# KANAL QO'SHISH FSM — Yangi 5-qadamli wizard (3 turi)
 # ════════════════════════════════════════════════════════════════════════════
+
+@router.callback_query(F.data.startswith("ch_type:"), AddChannelSG.channel_type)
+async def fsm_channel_type(call: CallbackQuery, state: FSMContext):
+    """1) Tur tanlash → 2) chat_id so'rash."""
+    ch_type = call.data.split(":")[1]
+    await state.update_data(ch_type=ch_type)
+    type_label = {
+        "public": "📢 Oddiy (public)",
+        "private": "🔒 Yopiq (invite link)",
+        "request_join": "✋ So'rovli kanal/guruh"
+    }.get(ch_type, ch_type)
+    await call.message.edit_text(
+        f"<b>Tur:</b> {type_label}\n\n"
+        f"Endi kanal/guruh chat ID sini yuboring\n"
+        f"(masalan: <code>-1001234567890</code>)\n\n"
+        f"⚠️ Bot kanalda admin bo'lishi shart!"
+    )
+    await state.set_state(AddChannelSG.chat_id)
+    await call.answer()
+
 
 @router.message(AddChannelSG.chat_id)
 async def fsm_channel_id(message: Message, state: FSMContext, session: AsyncSession | None = None):
+    """2) Chat ID qabul qilish va auto-detect."""
     try:
         chat_id = int(message.text.strip())
     except ValueError:
-        await message.reply("Chat ID raqam bo'lishi kerak:")
+        await message.reply("Chat ID raqam bo'lishi kerak (masalan: -1001234567890):")
         return
 
-    # Auto-detect via Telegram API
+    data = await state.get_data()
+    ch_type = data.get("ch_type", "public")
+
     title = f"Kanal {chat_id}"
-    ch_type = "public"
     members = 0
-    invite_link = None
+    detected_username = None
+    detected_invite = None
     try:
         from bot.loader import bot
         chat = await bot.get_chat(chat_id)
         title = chat.title or title
-        if chat.type in ("supergroup", "group"):
-            ch_type = "public"
-        else:
-            ch_type = "public" if chat.username else "private"
+        detected_username = chat.username
+        detected_invite = chat.invite_link  # admin tomonidan oldin yaratilgan invite (agar bor bo'lsa)
         try:
             members = await bot.get_chat_member_count(chat_id)
         except Exception:
             pass
-        invite_link = chat.invite_link
     except Exception as e:
-        logger.warning(f"get_chat xatolik: {e}")
+        logger.warning(f"get_chat: {e}")
         await message.reply(
             f"⚠️ Kanal ma'lumotlarini olishda xatolik: {str(e)[:100]}\n"
-            "Bot kanalda admin ekanligini tekshiring.\n"
-            "Davom etamizmi?",
-            reply_markup=confirm_kb("ch_force")
+            "Bot kanalda admin ekanligini tekshiring va qayta yuboring:"
         )
-        await state.update_data(tg_chat_id=chat_id, title=title, ch_type=ch_type, members=members, invite_link=invite_link)
-        await state.set_state(AddChannelSG.is_required)
         return
 
-    await state.update_data(tg_chat_id=chat_id, title=title, ch_type=ch_type, members=members, invite_link=invite_link)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Ha — majburiy", callback_data="ch_req:yes"),
-            InlineKeyboardButton(text="❌ Yo'q", callback_data="ch_req:no"),
-        ]
-    ])
-    await message.reply(
-        f"📋 Kanal topildi:\n"
-        f"Nomi: <b>{title}</b>\n"
-        f"Turi: {ch_type}\n"
-        f"A'zolar: {members}\n\n"
-        f"Majburiy obuna?",
-        reply_markup=kb
+    await state.update_data(
+        tg_chat_id=chat_id, title=title, members=members,
+        detected_username=detected_username, detected_invite=detected_invite,
     )
+
+    # 3) Invite link (ch_type ga qarab)
+    if ch_type == "public" and detected_username:
+        # Public username mavjud — auto link, invite link kiritish kerak emas
+        await state.update_data(invite_link=f"https://t.me/{detected_username}")
+        await _ask_required(message, state)
+    else:
+        # Private yoki request_join — admin invite link kiritadi
+        if ch_type == "request_join":
+            prompt = (
+                f"📋 <b>{title}</b> topildi (a'zo: {members})\n\n"
+                f"✋ <b>So'rovli (Join Request)</b> link yuboring:\n"
+                f"Masalan: <code>https://t.me/+ABCxyz123</code>\n\n"
+                f"⚠️ Admin tomonidan yaratilgan, \"Approve required\" yoqilgan link bo'lishi shart.\n"
+                f"Bot kanalda admin bo'lishi va so'rovlarni qabul qilishi kerak."
+            )
+        else:  # private
+            prompt = (
+                f"📋 <b>{title}</b> topildi (a'zo: {members})\n\n"
+                f"🔒 <b>Yopiq kanal</b> uchun invite link yuboring:\n"
+                f"Masalan: <code>https://t.me/+ABCxyz123</code>\n\n"
+                f"Yoki saqlangan link uchun ⏩:",
+            )
+            prompt = prompt[0] if isinstance(prompt, tuple) else prompt
+        await message.reply(prompt, reply_markup=skip_kb("ch_skip_link"))
+        await state.set_state(AddChannelSG.invite_link_input)
+
+
+@router.callback_query(F.data == "ch_skip_link", AddChannelSG.invite_link_input)
+async def fsm_channel_skip_link(call: CallbackQuery, state: FSMContext):
+    """Invite link kiritmaslik — saqlangan/aniqlangan invite ishlatiladi (faqat private uchun)."""
+    data = await state.get_data()
+    ch_type = data.get("ch_type", "private")
+    if ch_type == "request_join":
+        await call.answer("So'rovli kanal uchun link MAJBURIY", show_alert=True)
+        return
+    await state.update_data(invite_link=data.get("detected_invite"))
+    await _ask_required(call.message, state)
+    await call.answer()
+
+
+@router.message(AddChannelSG.invite_link_input)
+async def fsm_channel_invite_link(message: Message, state: FSMContext):
+    """3) Admin invite link yuboradi."""
+    link = (message.text or "").strip()
+    if not (link.startswith("https://t.me/") or link.startswith("http://t.me/") or link.startswith("tg://")):
+        await message.reply("❌ To'g'ri link yuboring (https://t.me/+...):")
+        return
+    await state.update_data(invite_link=link)
+    await _ask_required(message, state)
+
+
+async def _ask_required(message: Message, state: FSMContext):
+    """4) Majburiy obunani so'rash."""
+    data = await state.get_data()
+    type_label = {
+        "public": "📢 Oddiy",
+        "private": "🔒 Yopiq",
+        "request_join": "✋ So'rovli"
+    }.get(data.get("ch_type"), "📋")
+    text = (
+        f"<b>Tur:</b> {type_label}\n"
+        f"<b>Nomi:</b> {data.get('title')}\n"
+        f"<b>ID:</b> <code>{data.get('tg_chat_id')}</code>\n"
+        f"<b>Link:</b> {data.get('invite_link') or '—'}\n\n"
+        f"Majburiy obuna qilamizmi?"
+    )
+    await message.answer(text, reply_markup=channel_required_kb())
     await state.set_state(AddChannelSG.is_required)
 
 
 @router.callback_query(F.data.startswith("ch_req:"), AddChannelSG.is_required)
 async def fsm_channel_required(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
+    """5) Majburiy → saqlash."""
     is_req = call.data.split(":")[1] == "yes"
     data = await state.get_data()
     if not session:
@@ -462,52 +646,42 @@ async def fsm_channel_required(call: CallbackQuery, state: FSMContext, session: 
     repo = ChannelRepository(session)
     existing = await repo.get_by_tg_chat_id(data["tg_chat_id"])
     if existing:
-        await call.message.answer(f"Bu kanal allaqachon mavjud: {existing.title}")
+        await call.message.edit_text(f"❌ Bu kanal allaqachon mavjud: <b>{existing.title}</b>")
         await state.clear()
         return await call.answer()
+
     ch = await repo.create(
         tg_chat_id=data["tg_chat_id"],
         title=data["title"],
-        channel_type=data["ch_type"],
+        channel_type=data.get("ch_type", "public"),
         invite_link=data.get("invite_link"),
         is_required=is_req,
     )
     if data.get("members"):
         await repo.update_members_count(ch.id, data["members"])
     await session.commit()
+
+    type_label = {
+        "public": "📢 Oddiy",
+        "private": "🔒 Yopiq",
+        "request_join": "✋ So'rovli"
+    }.get(data.get("ch_type"), "📋")
     req = "Ha ✅" if is_req else "Yo'q ❌"
     await call.message.edit_text(
-        f"✅ Kanal qo'shildi!\n\n"
-        f"Nomi: {ch.title}\nID: {ch.tg_chat_id}\n"
-        f"Turi: {ch.type}\nMajburiy: {req}\n"
+        f"✅ <b>Kanal qo'shildi!</b>\n\n"
+        f"Tur: {type_label}\n"
+        f"Nomi: {ch.title}\n"
+        f"ID: <code>{ch.tg_chat_id}</code>\n"
+        f"Link: {ch.invite_link or '—'}\n"
+        f"Majburiy: {req}\n"
         f"A'zolar: {data.get('members', 0)}"
     )
     await state.clear()
     await call.answer("✅ Saqlandi!", show_alert=True)
 
 
-@router.callback_query(F.data == "ch_force_confirm", AddChannelSG.is_required)
-async def fsm_channel_force_confirm(call: CallbackQuery, state: FSMContext):
-    """Force add despite error — ask required."""
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Ha — majburiy", callback_data="ch_req:yes"),
-            InlineKeyboardButton(text="❌ Yo'q", callback_data="ch_req:no"),
-        ]
-    ])
-    await call.message.answer("Majburiy obuna?", reply_markup=kb)
-    await call.answer()
-
-
-@router.callback_query(F.data == "ch_force_cancel", AddChannelSG.is_required)
-async def fsm_channel_force_cancel(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await call.message.edit_text("❌ Bekor qilindi.")
-    await call.answer()
-
-
 # ════════════════════════════════════════════════════════════════════════════
-# BROADCAST FSM  (rejim → content → tugmalar → segment → ko'rik → yuborish)
+# BROADCAST FSM — Maximum API
 # ════════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(F.data.startswith("bc_mode:"), BroadcastSG.mode)
@@ -516,6 +690,12 @@ async def fsm_bc_mode(call: CallbackQuery, state: FSMContext):
     await state.update_data(mode=mode)
     if mode == "custom":
         await call.message.answer("📝 Xabar matnini yoki media (rasm/video/fayl) yuboring:")
+    elif mode == "rich":
+        await call.message.answer(
+            "🎨 <b>Rich rejim</b>\n\n"
+            "Avval xabar matnini yoki media yuboring (matn HTML formatda).\n"
+            "So'ngra tugmalar qo'shasiz."
+        )
     elif mode == "forward":
         await call.message.answer("↗️ Forward qilmoqchi bo'lgan xabarni shu chatga forward qiling:")
     else:
@@ -527,7 +707,10 @@ async def fsm_bc_mode(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "bc_cancel")
 async def fsm_bc_cancel(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await call.message.edit_text("❌ Broadcast bekor qilindi.")
+    try:
+        await call.message.edit_text("❌ Broadcast bekor qilindi.")
+    except Exception:
+        await call.message.answer("❌ Broadcast bekor qilindi.")
     await call.answer()
 
 
@@ -549,7 +732,6 @@ async def fsm_bc_content(message: Message, state: FSMContext):
         await state.set_state(BroadcastSG.buttons)
         return
 
-    # Custom yoki copy
     text = message.text or message.caption or ""
     media = {}
     if message.photo:
@@ -576,10 +758,16 @@ async def fsm_bc_content(message: Message, state: FSMContext):
 @router.callback_query(F.data == "bc_add_buttons", BroadcastSG.buttons)
 async def fsm_bc_add_buttons(call: CallbackQuery, state: FSMContext):
     await call.message.answer(
-        "Tugmalarni quyidagi formatda yozing:\n\n"
-        "<code>Tugma matni | https://link.com</code>\n"
-        "<code>Tugma 2 | https://link2.com</code>\n\n"
-        "Har bir qator — alohida tugma."
+        "<b>Tugma format:</b>\n\n"
+        "<code>Tugma 1 | https://link1.com\n"
+        "Tugma 2 | https://link2.com</code>\n\n"
+        "<b>1 qatorda 2 tugma:</b>\n"
+        "<code>A | url1 :: B | url2</code>\n\n"
+        "<b>Yangi qator:</b>\n"
+        "<code>A | url1\n"
+        "---\n"
+        "B | url2</code>\n\n"
+        "Callback uchun: <code>Matn | callback:my_data</code>"
     )
     await call.answer()
 
@@ -587,37 +775,131 @@ async def fsm_bc_add_buttons(call: CallbackQuery, state: FSMContext):
 @router.message(BroadcastSG.buttons)
 async def fsm_bc_buttons_text(message: Message, state: FSMContext):
     """Tugmalar matnini qabul qilish."""
-    kb = parse_buttons_text(message.text)
+    kb = parse_buttons_text(message.text or "")
     if kb:
-        # Serialize buttons to JSON for storage
         buttons_data = []
         for row in kb.inline_keyboard:
+            row_data = []
             for btn in row:
-                buttons_data.append({
+                row_data.append({
                     "text": btn.text,
                     "url": btn.url,
                     "callback_data": btn.callback_data,
                 })
+            buttons_data.append(row_data)
         await state.update_data(buttons=buttons_data)
-        await message.reply("✅ Tugmalar qo'shildi.", reply_markup=broadcast_after_content_kb())
+        await message.reply(
+            f"✅ Tugmalar qo'shildi: {sum(len(r) for r in buttons_data)} ta",
+            reply_markup=broadcast_after_content_kb()
+        )
     else:
-        await message.reply("❌ Formatni tekshiring. Har qator: Matn | link")
+        await message.reply("❌ Formatni tekshiring. Har qator: <code>Matn | link</code>")
 
 
 @router.callback_query(F.data == "bc_segment", BroadcastSG.buttons)
-async def fsm_bc_segment(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_reply_markup(reply_markup=broadcast_segment_kb())
+async def fsm_bc_segment(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
+    target = await _calc_target(session, {"type": "all"}) if session else 0
+    await call.message.edit_reply_markup(reply_markup=broadcast_segment_kb(target_count=target))
     await state.set_state(BroadcastSG.segment)
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("bc_seg:"), BroadcastSG.segment)
-async def fsm_bc_segment_select(call: CallbackQuery, state: FSMContext):
+async def fsm_bc_segment_select(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
     seg = call.data.split(":")[1]
-    await state.update_data(segment=seg)
-    await call.answer(f"Segment: {seg}", show_alert=True)
+    if seg == "custom":
+        await state.update_data(custom_filters={})
+        target = await _calc_target(session, _custom_to_segment({})) if session else 0
+        await call.message.edit_reply_markup(
+            reply_markup=broadcast_custom_segment_kb({}, target_count=target)
+        )
+        await state.set_state(BroadcastSG.segment_custom)
+        await call.answer("Custom filter")
+        return
+    seg_data = _seg_simple_to_segment(seg)
+    target = await _calc_target(session, seg_data) if session else 0
+    await state.update_data(segment=seg_data)
+    await call.answer(f"Maqsad: {target}", show_alert=True)
     await state.set_state(BroadcastSG.buttons)
     await call.message.edit_reply_markup(reply_markup=broadcast_after_content_kb())
+
+
+def _seg_simple_to_segment(seg: str) -> dict:
+    """Asosiy segment buttondan dict yasash."""
+    if seg == "all":
+        return {"type": "all"}
+    if seg == "premium":
+        return {"type": "premium"}
+    if seg.startswith("active_"):
+        return {"type": "active", "days": int(seg.split("_")[1])}
+    if seg.startswith("new_"):
+        return {"type": "new", "days": int(seg.split("_")[1])}
+    return {"type": "all"}
+
+
+def _custom_to_segment(filters: dict) -> dict:
+    """Custom filter dict ni segment dict ga aylantirish."""
+    seg = {"type": "custom"}
+    if filters.get("active") and filters["active"] != "all":
+        seg["active_days"] = int(filters["active"])
+    if filters.get("new") and filters["new"] != "all":
+        seg["new_days"] = int(filters["new"])
+    if filters.get("lang") and filters["lang"] != "all":
+        seg["lang"] = filters["lang"]
+    if filters.get("premium") and filters["premium"] != "all":
+        seg["premium_only"] = filters["premium"] == "yes"
+        seg["non_premium"] = filters["premium"] == "no"
+    return seg
+
+
+async def _calc_target(session, segment: dict) -> int:
+    """Maqsad foydalanuvchilar sonini hisoblash."""
+    if not session:
+        return 0
+    try:
+        repo = UserRepository(session)
+        if hasattr(repo, "count_for_broadcast"):
+            return await repo.count_for_broadcast(segment)
+        users = await repo.get_users_for_broadcast(segment=segment, limit=100000)
+        return len(users)
+    except Exception as e:
+        logger.warning(f"calc target: {e}")
+        return 0
+
+
+@router.callback_query(F.data.startswith("bc_cf:"), BroadcastSG.segment_custom)
+async def fsm_bc_custom_filter(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
+    """Custom filter tugmalari."""
+    parts = call.data.split(":")
+    action = parts[1]
+    data = await state.get_data()
+    filters = data.get("custom_filters", {})
+
+    if action == "apply":
+        seg = _custom_to_segment(filters)
+        await state.update_data(segment=seg)
+        await call.answer("Filter saqlandi", show_alert=True)
+        await state.set_state(BroadcastSG.buttons)
+        await call.message.edit_reply_markup(reply_markup=broadcast_after_content_kb())
+        return
+
+    if action == "refresh":
+        target = await _calc_target(session, _custom_to_segment(filters))
+        await call.answer(f"Maqsad: {target}", show_alert=True)
+        await call.message.edit_reply_markup(
+            reply_markup=broadcast_custom_segment_kb(filters, target_count=target)
+        )
+        return
+
+    # action: active/new/lang/premium, value parts[2]
+    value = parts[2]
+    filters[action] = value
+    await state.update_data(custom_filters=filters)
+    target = await _calc_target(session, _custom_to_segment(filters))
+    await call.message.edit_reply_markup(
+        reply_markup=broadcast_custom_segment_kb(filters, target_count=target)
+    )
+    await call.answer()
 
 
 @router.callback_query(F.data == "bc_back_content", BroadcastSG.segment)
@@ -631,29 +913,96 @@ async def fsm_bc_back_content(call: CallbackQuery, state: FSMContext):
 async def fsm_bc_preview(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
     data = await state.get_data()
     text = data.get("text", "")
-    seg = data.get("segment", "all")
+    seg = data.get("segment", {"type": "all"})
 
-    target = "?"
-    if session:
-        user_repo = UserRepository(session)
-        target = await user_repo.get_total_count()
+    target = await _calc_target(session, seg) if session else 0
+    seg_label = _segment_label(seg)
 
     preview = (
         f"📢 <b>Broadcast ko'rik</b>\n\n"
         f"{text}\n\n"
-        f"Rejim: {data.get('mode', 'custom')}\n"
-        f"Segment: {seg}\n"
-        f"👥 Maqsad: ~{target} foydalanuvchi"
+        f"<b>Rejim:</b> {data.get('mode', 'custom')}\n"
+        f"<b>Segment:</b> {seg_label}\n"
+        f"<b>Maqsad:</b> ~{target} foydalanuvchi"
     )
     media_keys = [k for k in data if k.startswith("media_")]
     if media_keys:
-        preview += f"\n📎 Media: {', '.join(k.replace('media_', '') for k in media_keys)}"
+        preview += f"\n<b>Media:</b> {', '.join(k.replace('media_', '') for k in media_keys)}"
     if data.get("buttons"):
-        preview += f"\n🔘 Tugmalar: {len(data['buttons'])} ta"
+        total_btn = sum(len(r) for r in data["buttons"])
+        preview += f"\n<b>Tugmalar:</b> {total_btn} ta"
 
     await call.message.answer(preview, reply_markup=broadcast_confirm_kb())
     await state.set_state(BroadcastSG.preview)
     await call.answer()
+
+
+def _segment_label(seg: dict) -> str:
+    if not seg or seg.get("type") == "all":
+        return "🌐 Barchaga"
+    t = seg.get("type")
+    if t == "premium":
+        return "⭐ Premium"
+    if t == "active":
+        return f"🔥 Faol ({seg.get('days', 7)} kun)"
+    if t == "new":
+        return f"🆕 Yangi ({seg.get('days', 7)} kun)"
+    if t == "custom":
+        parts = []
+        if seg.get("active_days"):
+            parts.append(f"Faol {seg['active_days']}k")
+        if seg.get("new_days"):
+            parts.append(f"Yangi {seg['new_days']}k")
+        if seg.get("lang"):
+            parts.append(f"Til {seg['lang']}")
+        if seg.get("premium_only"):
+            parts.append("Premium")
+        if seg.get("non_premium"):
+            parts.append("Premium emas")
+        return "🎯 " + (", ".join(parts) if parts else "Barchaga")
+    return "🌐 Barchaga"
+
+
+@router.callback_query(F.data == "bc_test", BroadcastSG.preview)
+async def fsm_bc_test(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
+    """Test yuborish — adminning o'ziga."""
+    data = await state.get_data()
+    try:
+        from bot.loader import bot
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        kb = None
+        if data.get("buttons"):
+            builder = InlineKeyboardBuilder()
+            for row in data["buttons"]:
+                row_buttons = []
+                for btn in row:
+                    if btn.get("url"):
+                        row_buttons.append(InlineKeyboardButton(text=btn["text"], url=btn["url"]))
+                    elif btn.get("callback_data"):
+                        row_buttons.append(InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"]))
+                if row_buttons:
+                    builder.row(*row_buttons)
+            kb = builder.as_markup()
+
+        text = data.get("text", "")
+        uid = call.from_user.id
+        if data.get("media_video"):
+            await bot.send_video(uid, data["media_video"], caption=text, reply_markup=kb)
+        elif data.get("media_photo"):
+            await bot.send_photo(uid, data["media_photo"], caption=text, reply_markup=kb)
+        elif data.get("media_animation"):
+            await bot.send_animation(uid, data["media_animation"], caption=text, reply_markup=kb)
+        elif data.get("media_document"):
+            await bot.send_document(uid, data["media_document"], caption=text, reply_markup=kb)
+        elif text:
+            await bot.send_message(uid, text, reply_markup=kb)
+        else:
+            await call.answer("Bo'sh xabar", show_alert=True)
+            return
+        await call.answer("✅ Test xabar yuborildi", show_alert=True)
+    except Exception as e:
+        logger.error(f"test send: {e}")
+        await call.answer(f"❌ {str(e)[:80]}", show_alert=True)
 
 
 @router.callback_query(F.data == "bc_confirm", BroadcastSG.preview)
@@ -669,23 +1018,22 @@ async def fsm_bc_confirm(call: CallbackQuery, state: FSMContext, session: AsyncS
     bc.media_video = data.get("media_video")
     bc.media_document = data.get("media_document")
     bc.media_animation = data.get("media_animation")
-    bc.segment = {"type": data.get("segment", "all")}
+    bc.segment = data.get("segment", {"type": "all"})
     if data.get("buttons"):
         bc.buttons = data["buttons"]
     await session.commit()
 
-    await call.message.edit_text(
-        f"🚀 Broadcast #{bc.id} ishga tushirildi...",
+    progress_msg = await call.message.edit_text(
+        f"🚀 <b>Broadcast #{bc.id} ishga tushirildi...</b>\n\nKutilmoqda...",
         reply_markup=broadcast_controls(bc.id)
     )
     await call.answer()
     await state.clear()
 
-    # Background broadcast
     from services.broadcaster import BroadcastEngine
     from bot.loader import bot
     engine = BroadcastEngine(session, bot)
-    asyncio.create_task(engine.start(bc.id, call.from_user.id))
+    asyncio.create_task(engine.start(bc.id, call.from_user.id, progress_chat_id=call.message.chat.id, progress_message_id=progress_msg.message_id))
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -784,102 +1132,3 @@ async def fsm_set_restore(message: Message, state: FSMContext, session: AsyncSes
         logger.error(f"Restore error: {e}")
         await message.reply(f"❌ Xatolik: {str(e)[:100]}")
     await state.clear()
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# REKLAMA YARATISH FSM
-# ════════════════════════════════════════════════════════════════════════════
-
-@router.message(AdSG.content)
-async def fsm_ad_content(message: Message, state: FSMContext):
-    """Reklama mazmunini qabul qilish."""
-    text = message.text or message.caption or ""
-    media = {}
-    media_type = None
-    if message.photo:
-        media["media_file_id"] = message.photo[-1].file_id
-        media_type = "photo"
-    elif message.video:
-        media["media_file_id"] = message.video.file_id
-        media_type = "video"
-    elif message.animation:
-        media["media_file_id"] = message.animation.file_id
-        media_type = "animation"
-    elif message.document:
-        media["media_file_id"] = message.document.file_id
-        media_type = "document"
-
-    await state.update_data(ad_text=text, media_type=media_type, **media)
-    await message.reply(
-        "Reklama muddatini kiriting (kunlarda, masalan: 7).\n"
-        "⏩ O'tkazish — cheksiz:",
-        reply_markup=skip_kb("skip_ad_duration")
-    )
-    await state.set_state(AdSG.duration)
-
-
-@router.callback_query(F.data == "skip_ad_duration", AdSG.duration)
-async def fsm_ad_skip_duration(call: CallbackQuery, state: FSMContext):
-    await state.update_data(duration_days=None)
-    data = await state.get_data()
-    text = (
-        f"📣 <b>Reklama ko'rik</b>\n\n"
-        f"{data.get('ad_text', '')}\n\n"
-        f"Media: {data.get('media_type', '—')}\n"
-        f"Muddat: cheksiz"
-    )
-    await call.message.answer(text, reply_markup=confirm_kb("ad"))
-    await state.set_state(AdSG.confirm)
-    await call.answer()
-
-
-@router.message(AdSG.duration)
-async def fsm_ad_duration(message: Message, state: FSMContext):
-    try:
-        days = int(message.text.strip())
-        if days < 1:
-            raise ValueError
-    except ValueError:
-        await message.reply("Musbat raqam kiriting yoki ⏩ O'tkazish bosing:")
-        return
-    await state.update_data(duration_days=days)
-    data = await state.get_data()
-    text = (
-        f"📣 <b>Reklama ko'rik</b>\n\n"
-        f"{data.get('ad_text', '')}\n\n"
-        f"Media: {data.get('media_type', '—')}\n"
-        f"Muddat: {days} kun"
-    )
-    await message.answer(text, reply_markup=confirm_kb("ad"))
-    await state.set_state(AdSG.confirm)
-
-
-@router.callback_query(F.data == "ad_confirm", AdSG.confirm)
-async def fsm_ad_confirm(call: CallbackQuery, state: FSMContext, session: AsyncSession | None = None):
-    if not session:
-        return await call.answer("Sessiya yo'q", show_alert=True)
-    data = await state.get_data()
-    from db.repositories.ad_repo import AdRepository
-    from datetime import datetime, timedelta
-    repo = AdRepository(session)
-    expires = None
-    if data.get("duration_days"):
-        expires = datetime.utcnow() + timedelta(days=data["duration_days"])
-    ad = await repo.create(
-        admin_id=call.from_user.id,
-        text=data.get("ad_text"),
-        media_file_id=data.get("media_file_id"),
-        media_type=data.get("media_type"),
-        expires_at=expires,
-    )
-    await session.commit()
-    await call.message.edit_text(f"✅ Reklama #{ad.id} yaratildi!")
-    await state.clear()
-    await call.answer("✅ Saqlandi!", show_alert=True)
-
-
-@router.callback_query(F.data == "ad_cancel", AdSG.confirm)
-async def fsm_ad_cancel(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await call.message.edit_text("❌ Reklama bekor qilindi.")
-    await call.answer()

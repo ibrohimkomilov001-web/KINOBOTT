@@ -100,6 +100,10 @@ class StatsRepository:
         result = await self.session.execute(stmt)
         return result.all()
 
+    async def get_top_searches(self, limit: int = 20) -> List[Tuple[str, int]]:
+        """Alias for get_top_search_queries."""
+        return await self.get_top_search_queries(limit=limit)
+
     async def log_search_query(self, user_id: int, query: str, results_count: int) -> models.SearchQuery:
         """Log a search query."""
         search = models.SearchQuery(

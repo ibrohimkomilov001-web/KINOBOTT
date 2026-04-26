@@ -16,8 +16,19 @@ class AddMovieSG(StatesGroup):
 
 class EditMovieSG(StatesGroup):
     """Kino tahrirlash."""
-    field = State()   # qaysi maydon o'zgaradi
-    value = State()   # yangi qiymat
+    field = State()   # qaysi maydon o'zgaradi (tugma orqali)
+    value = State()   # yangi qiymat (matn yoki video)
+
+
+class SearchMovieSG(StatesGroup):
+    """Admin uchun kino qidiruv."""
+    query = State()
+
+
+class EditSeriesSG(StatesGroup):
+    """Serial tahrirlash."""
+    field = State()
+    value = State()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -54,10 +65,12 @@ class AddEpisodeSG(StatesGroup):
 # ═══════════════════════════════════════════════════════════════
 
 class AddChannelSG(StatesGroup):
-    """Kanal qo'shish FSM."""
-    chat_id = State()       # 1. Chat ID kiritish
-    is_required = State()   # 2. Majburiy obuna?
-    confirm = State()       # 3. Tasdiqlash
+    """Kanal qo'shish FSM (3 turi: public/private/request_join)."""
+    channel_type = State()       # 1. Tur tanlash (public/private/request_join)
+    chat_id = State()            # 2. Chat ID kiritish
+    invite_link_input = State()  # 3. (private/request_join uchun) admin invite link kiritadi
+    is_required = State()        # 4. Majburiy obuna?
+    confirm = State()            # 5. Tasdiqlash
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -66,11 +79,12 @@ class AddChannelSG(StatesGroup):
 
 class BroadcastSG(StatesGroup):
     """Broadcast FSM — maximum API."""
-    mode = State()          # 1. Rejim tanlash (yangi/forward/copy)
-    content = State()       # 2. Xabar mazmuni (matn + media)
-    buttons = State()       # 3. Tugmalar (ixtiyoriy)
-    segment = State()       # 4. Segmentlash (ixtiyoriy)
-    preview = State()       # 5. Ko'rik + tasdiqlash
+    mode = State()             # 1. Rejim tanlash (custom/forward/copy/rich)
+    content = State()          # 2. Xabar mazmuni (matn + media)
+    buttons = State()          # 3. Tugmalar (rich format)
+    segment = State()          # 4. Asosiy segment tanlash
+    segment_custom = State()   # 5. Custom multi-AND filter
+    preview = State()          # 6. Ko'rik + tasdiqlash
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -100,15 +114,3 @@ class SettingsSG(StatesGroup):
 class CommentSG(StatesGroup):
     """Komment yozish FSM."""
     text = State()   # Komment matnini kiritish
-
-
-# ═══════════════════════════════════════════════════════════════
-# Reklama
-# ═══════════════════════════════════════════════════════════════
-
-class AdSG(StatesGroup):
-    """Reklama yaratish FSM."""
-    content = State()    # Matn + media
-    buttons = State()    # Tugmalar
-    duration = State()   # Muddat (kunlar)
-    confirm = State()    # Tasdiqlash

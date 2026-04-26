@@ -156,37 +156,67 @@ class UserRepository:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
+    def _apply_segment_filters(self, query, segment: Optional[dict]):
+        """Apply segment filters to a SQLAlchemy query (shared by ID list and count)."""
+        if not segment or not isinstance(segment, dict):
+            return query
+
+        seg_type = segment.get("type", "all")
+
+        # Simple segment types
+        if seg_type == "premium":
+            query = query.where(models.User.is_premium == True)
+        elif seg_type == "active":
+            days = int(segment.get("days", 7))
+            since = datetime.utcnow() - timedelta(days=days)
+            query = query.where(models.User.last_active_at >= since)
+        elif seg_type == "new":
+            days = int(segment.get("days", 7))
+            since = datetime.utcnow() - timedelta(days=days)
+            query = query.where(models.User.joined_at >= since)
+        elif seg_type == "active_7":
+            since = datetime.utcnow() - timedelta(days=7)
+            query = query.where(models.User.last_active_at >= since)
+        elif seg_type == "active_30":
+            since = datetime.utcnow() - timedelta(days=30)
+            query = query.where(models.User.last_active_at >= since)
+
+        # Custom multi-AND filters
+        if segment.get("active_days"):
+            since = datetime.utcnow() - timedelta(days=int(segment["active_days"]))
+            query = query.where(models.User.last_active_at >= since)
+        if segment.get("new_days"):
+            since = datetime.utcnow() - timedelta(days=int(segment["new_days"]))
+            query = query.where(models.User.joined_at >= since)
+        if segment.get("lang"):
+            query = query.where(models.User.lang == segment["lang"])
+        if segment.get("joined_after"):
+            joined_after = datetime.fromisoformat(segment["joined_after"])
+            query = query.where(models.User.joined_at >= joined_after)
+        if segment.get("premium_only"):
+            query = query.where(models.User.is_premium == True)
+        if segment.get("non_premium"):
+            query = query.where(models.User.is_premium == False)
+
+        return query
+
     async def get_users_for_broadcast(self, segment: Optional[dict] = None, limit: int = 100000, offset: int = 0) -> List[int]:
         """Get user IDs for broadcast based on segment filter."""
         query = select(models.User.id).where(
             models.User.is_banned == False,
             models.User.is_bot_blocked == False
         )
-
-        if segment and isinstance(segment, dict):
-            seg_type = segment.get("type", "all")
-
-            if seg_type == "active_7":
-                since = datetime.utcnow() - timedelta(days=7)
-                query = query.where(models.User.last_active_at >= since)
-            elif seg_type == "active_30":
-                since = datetime.utcnow() - timedelta(days=30)
-                query = query.where(models.User.last_active_at >= since)
-            elif seg_type == "premium":
-                query = query.where(models.User.is_premium == True)
-
-            # Legacy filters
-            if segment.get("lang"):
-                query = query.where(models.User.lang == segment["lang"])
-            if segment.get("active_days"):
-                since = datetime.utcnow() - timedelta(days=segment["active_days"])
-                query = query.where(models.User.last_active_at >= since)
-            if segment.get("joined_after"):
-                joined_after = datetime.fromisoformat(segment["joined_after"])
-                query = query.where(models.User.joined_at >= joined_after)
-            if segment.get("premium_only"):
-                query = query.where(models.User.is_premium == True)
-
+        query = self._apply_segment_filters(query, segment)
         query = query.limit(limit).offset(offset)
         result = await self.session.execute(query)
         return result.scalars().all()
+
+    async def count_for_broadcast(self, segment: Optional[dict] = None) -> int:
+        """Count users matching the segment for real-time target preview."""
+        query = select(func.count(models.User.id)).where(
+            models.User.is_banned == False,
+            models.User.is_bot_blocked == False
+        )
+        query = self._apply_segment_filters(query, segment)
+        result = await self.session.execute(query)
+        return result.scalar() or 0
