@@ -23,18 +23,37 @@ logger = setup_logging()
 
 async def register_super_admins():
     """Register SUPER_ADMIN_IDS as owner admins in DB."""
+    logger.info(f"Registering super admins: {settings.SUPER_ADMIN_IDS}")
     async with AsyncSessionLocal() as session:
         admin_repo = AdminRepository(session)
         user_repo = UserRepository(session)
         for admin_id in settings.SUPER_ADMIN_IDS:
-            # Ensure user exists
-            await user_repo.get_or_create(user_id=admin_id, first_name="Admin")
-            # Ensure admin record exists
-            existing = await admin_repo.get_by_user_id(admin_id)
-            if not existing:
-                await admin_repo.create(admin_id, role=AdminRole.OWNER.value)
-                logger.info(f"✓ Registered super admin: {admin_id}")
+            try:
+                # Ensure user exists
+                user = await user_repo.get_by_id(admin_id)
+                if not user:
+                    from db import models
+                    user = models.User(id=admin_id, first_name="Admin", is_premium=False)
+                    session.add(user)
+                    await session.flush()
+                    logger.info(f"✓ Created user for admin: {admin_id}")
+                # Ensure admin record exists with owner role
+                existing = await admin_repo.get_by_user_id(admin_id)
+                if existing:
+                    if existing.role != AdminRole.OWNER.value:
+                        existing.role = AdminRole.OWNER.value
+                        logger.info(f"✓ Updated admin {admin_id} to owner")
+                    else:
+                        logger.info(f"✓ Admin {admin_id} already registered as owner")
+                else:
+                    await admin_repo.create(admin_id, role=AdminRole.OWNER.value)
+                    logger.info(f"✓ Registered super admin: {admin_id}")
+            except Exception as e:
+                logger.error(f"Error registering admin {admin_id}: {e}")
+                await session.rollback()
+                continue
         await session.commit()
+        logger.info("Super admin registration complete")
 
 
 async def main():
