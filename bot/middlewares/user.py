@@ -41,7 +41,7 @@ class UserTrackingMiddleware(BaseMiddleware):
                 
                 # Update premium status if available
                 if hasattr(user, 'is_premium'):
-                    db_user.is_premium = user.is_premium
+                    db_user.is_premium = bool(user.is_premium)
                 
                 # Update last_active_at
                 await user_repo.update_last_active(user.id)
