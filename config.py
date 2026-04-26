@@ -74,12 +74,17 @@ class Settings(BaseSettings):
 
     @field_validator("SUPER_ADMIN_IDS", mode="before")
     @classmethod
-    def parse_super_admin_ids(cls, v: str | list[int]) -> list[int]:
+    def parse_super_admin_ids(cls, v) -> list[int]:
         """Parse comma-separated admin IDs."""
         if isinstance(v, list):
-            return v
+            return [int(x) for x in v if str(x).strip()]
+        if isinstance(v, (int, float)):
+            return [int(v)]
         if isinstance(v, str):
-            return [int(x.strip()) for x in v.split(",")]
+            v = v.strip()
+            if not v:
+                return []
+            return [int(x.strip()) for x in v.split(",") if x.strip()]
         return []
 
     @property
