@@ -12,7 +12,7 @@ from typing import List, Optional
 ADMIN_BUTTONS = {
     "stats": "📊 Statistika",
     "broadcast": "📢 Xabar yuborish",
-    "channels": "📋 Kanal boshqaruvi",
+    "channels": "� Kanal boshqaruvi",
     "movies": "🎬 Kino boshqaruvi",
     "settings": "⚙️ Sozlamalar",
     "admins": "👥 Adminlar",
@@ -212,14 +212,13 @@ def settings_kb(auto_code: bool, force_sub: bool, maintenance: bool) -> InlineKe
     fs = "🟢" if force_sub else "🔴"
     mt = "🟢" if maintenance else "🔴"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{ac} Avtomatik kod", callback_data="set_toggle:auto_code")],
-        [InlineKeyboardButton(text=f"{fs} Majburiy obuna", callback_data="set_toggle:force_subscription")],
-        [InlineKeyboardButton(text=f"{mt} Texnik ishlar", callback_data="set_toggle:maintenance_mode")],
-        [InlineKeyboardButton(text="📊 Broadcast tezligi", callback_data="set_bc_rate")],
-        [InlineKeyboardButton(text="� Backup olish", callback_data="set_backup")],
-        [InlineKeyboardButton(text="📥 Backup tiklash", callback_data="set_restore")],
+        [InlineKeyboardButton(text=f"{ac} Avtomatik kod", callback_data="set_toggle:auto_code"),
+         InlineKeyboardButton(text=f"{fs} Majburiy obuna", callback_data="set_toggle:force_subscription")],
+        [InlineKeyboardButton(text=f"{mt} Texnik ishlar", callback_data="set_toggle:maintenance_mode"),
+         InlineKeyboardButton(text="📊 Broadcast tezligi", callback_data="set_bc_rate")],
+        [InlineKeyboardButton(text="💾 Backup olish", callback_data="set_backup"),
+         InlineKeyboardButton(text="📥 Backup tiklash", callback_data="set_restore")],
         [InlineKeyboardButton(text="📺 Baza kanal ID", callback_data="set_base_channel")],
-        [InlineKeyboardButton(text="� Reklama", callback_data="set_ads")],
     ])
 
 
