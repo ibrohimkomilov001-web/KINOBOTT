@@ -32,37 +32,24 @@ async def handle_join_request(event: ChatJoinRequest, session: AsyncSession | No
         return
 
     try:
-        # 1) Approve
-        await event.approve()
-        logger.info(f"Approved join request: user={user_id}, channel={chat_id}")
-
-        # 2) Mark in DB
+        # Bot DOES NOT auto-approve. Only record the request in DB so subscription
+        # middleware can recognize the user as "pending member" of a request_join channel.
         existing = await repo.get_join_request(user_id, ch.id)
         if not existing:
             await repo.add_join_request(user_id, ch.id)
-        await repo.approve_join_request(user_id, ch.id)
 
-        # 3) Track referral if user came via bot referrer
-        user_repo = UserRepository(session)
-        user = await user_repo.get_by_id(user_id)
-        if user and not await _has_referral(session, user_id, ch.id):
+        # Track referral once if user came via bot
+        if not await _has_referral(session, user_id, ch.id):
             await repo.add_referral(user_id, ch.id)
 
         await session.commit()
-
-        # 4) Welcome the user back to the bot
-        try:
-            from bot.loader import bot
-            await bot.send_message(
-                user_id,
-                f"✅ <b>{ch.title}</b> ga obunangiz tasdiqlandi!\n\n"
-                f"Botga qaytishingiz mumkin: /start"
-            )
-        except Exception as e:
-            logger.debug(f"Could not message user {user_id}: {e}")
+        logger.info(
+            f"Recorded pending join request: user={user_id}, channel={chat_id} "
+            f"(awaiting admin approval — bot does NOT auto-approve)"
+        )
 
     except Exception as e:
-        logger.error(f"Error approving join request: {e}")
+        logger.error(f"Error recording join request: {e}")
         try:
             await session.rollback()
         except Exception:

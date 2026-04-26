@@ -73,12 +73,24 @@ class SubscriptionMiddleware(BaseMiddleware):
 
             not_subscribed = []
             for channel in required_channels:
+                is_member = False
                 try:
                     member = await bot.get_chat_member(channel.tg_chat_id, tg_user.id)
-                    if member.status not in OK_STATUSES:
-                        not_subscribed.append(channel)
+                    if member.status in OK_STATUSES:
+                        is_member = True
                 except Exception as e:
                     logger.warning(f"Error checking sub for {tg_user.id} in {channel.tg_chat_id}: {e}")
+
+                # For request_join channels: a recorded pending join_request also counts as subscribed
+                if not is_member and channel.type == "request_join":
+                    try:
+                        req = await channel_repo.get_join_request(tg_user.id, channel.id)
+                        if req is not None:
+                            is_member = True
+                    except Exception as e:
+                        logger.debug(f"join_request lookup error: {e}")
+
+                if not is_member:
                     not_subscribed.append(channel)
 
             if not_subscribed:

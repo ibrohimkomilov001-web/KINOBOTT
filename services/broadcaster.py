@@ -1,32 +1,27 @@
-"""Broadcast service with rate limiting, real-time progress, maximum API usage."""
+"""Broadcast service with rate limiting, real-time progress, owns its DB sessions."""
 
 import asyncio
-import time
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy.ext.asyncio import AsyncSession
+from db.base import AsyncSessionLocal
 from db.repositories.user_repo import UserRepository
 from db.repositories.broadcast_repo import BroadcastRepository
 from db.constants import BroadcastStatus
 from db import models
-from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class BroadcastEngine:
-    """Rate-limited broadcast engine with worker pool — Maximum API."""
+    """Rate-limited broadcast engine. Owns its DB sessions (no shared session)."""
 
-    def __init__(self, session: AsyncSession, bot: Bot, bot_rate: float = 28):
-        self.session = session
+    def __init__(self, bot: Bot, bot_rate: float = 28):
         self.bot = bot
         self.bot_rate = bot_rate
-        self.broadcast_repo = BroadcastRepository(session)
-        self.user_repo = UserRepository(session)
         self._cancelled = False
 
     def _build_keyboard(self, buttons_data) -> Optional[InlineKeyboardMarkup]:
@@ -69,42 +64,64 @@ class BroadcastEngine:
                     worker_count: int = 3,
                     progress_chat_id: Optional[int] = None,
                     progress_message_id: Optional[int] = None) -> bool:
-        """Start a broadcast with worker pool and real-time progress updates."""
-        broadcast = await self.broadcast_repo.get_by_id(broadcast_id)
-        if not broadcast:
-            logger.error(f"Broadcast {broadcast_id} not found")
-            return False
+        """Start a broadcast. Opens its OWN DB sessions for safety."""
+        # 1) Load broadcast snapshot in a one-shot session
+        async with AsyncSessionLocal() as init_session:
+            repo = BroadcastRepository(init_session)
+            broadcast = await repo.get_by_id(broadcast_id)
+            if not broadcast:
+                logger.error(f"Broadcast {broadcast_id} not found")
+                return False
 
-        # Get target users based on segment
-        segment = broadcast.segment or {}
-        seg_type = segment.get("type", "all") if isinstance(segment, dict) else "all"
-        users = await self.user_repo.get_users_for_broadcast(segment=segment, limit=100000)
-        logger.info(f"Broadcast {broadcast_id}: {len(users)} targets, segment={seg_type}")
+            # Snapshot all data we'll need for sending (so we don't hit the DB during send loop)
+            bc_snapshot = {
+                "id": broadcast.id,
+                "text": broadcast.text or "",
+                "media_photo": broadcast.media_photo,
+                "media_video": broadcast.media_video,
+                "media_animation": broadcast.media_animation,
+                "media_audio": broadcast.media_audio,
+                "media_voice": broadcast.media_voice,
+                "media_document": broadcast.media_document,
+                "buttons": broadcast.buttons,
+                "segment": broadcast.segment or {},
+                "mode": broadcast.mode,
+            }
 
-        await self.broadcast_repo.start_broadcast(broadcast_id, len(users))
-        await self.session.commit()
+            user_repo = UserRepository(init_session)
+            users = await user_repo.get_users_for_broadcast(segment=bc_snapshot["segment"], limit=100000)
+            target_count = len(users)
 
-        # Worker queue
+            await repo.start_broadcast(broadcast_id, target_count)
+            await init_session.commit()
+
+        logger.info(
+            f"Broadcast {broadcast_id}: {target_count} targets, "
+            f"segment={bc_snapshot['segment'].get('type', 'all')}"
+        )
+
+        # 2) Worker queue
         queue: asyncio.Queue = asyncio.Queue()
         for uid in users:
             await queue.put(uid)
         for _ in range(worker_count):
-            await queue.put(None)
+            await queue.put(None)  # Sentinel for each worker
 
-        # Progress updater task (every 5 seconds)
+        # 3) Start progress updater (every 5s, OWN session)
         progress_task = None
         if progress_chat_id and progress_message_id:
             progress_task = asyncio.create_task(
                 self._progress_updater(broadcast_id, progress_chat_id, progress_message_id)
             )
 
+        # 4) Spawn workers (each with OWN session)
         workers = [
-            asyncio.create_task(self._worker(broadcast_id, broadcast, queue))
+            asyncio.create_task(self._worker(broadcast_id, bc_snapshot, queue))
             for _ in range(worker_count)
         ]
-        await asyncio.gather(*workers)
+        await asyncio.gather(*workers, return_exceptions=True)
 
-        # Stop progress updater
+        # 5) Stop progress updater
         if progress_task:
             progress_task.cancel()
             try:
@@ -112,14 +129,17 @@ class BroadcastEngine:
             except asyncio.CancelledError:
                 pass
 
-        # Finalize
-        broadcast = await self.broadcast_repo.get_by_id(broadcast_id)
-        if broadcast.status != BroadcastStatus.FAILED.value:
-            await self.broadcast_repo.complete_broadcast(broadcast_id)
-        await self.session.commit()
+        # 6) Finalize and report
+        async with AsyncSessionLocal() as final_session:
+            repo = BroadcastRepository(final_session)
+            broadcast = await repo.get_by_id(broadcast_id)
+            if broadcast and broadcast.status != BroadcastStatus.FAILED.value:
+                await repo.complete_broadcast(broadcast_id)
+            await final_session.commit()
+            broadcast = await repo.get_by_id(broadcast_id)
 
-        # Final progress update
-        if progress_chat_id and progress_message_id:
+        # Final progress message
+        if progress_chat_id and progress_message_id and broadcast:
             try:
                 await self.bot.edit_message_text(
                     chat_id=progress_chat_id,
@@ -135,33 +155,35 @@ class BroadcastEngine:
             except Exception:
                 pass
 
-        # Report to admin
-        try:
-            await self.bot.send_message(
-                admin_chat_id,
-                f"✅ <b>Broadcast #{broadcast_id} tugallandi!</b>\n\n"
-                f"📤 Yuborildi: {broadcast.sent_count}\n"
-                f"❌ Xatolik: {broadcast.failed_count}\n"
-                f"🚫 Bloklangan: {broadcast.blocked_count}\n"
-                f"🎯 Jami maqsad: {broadcast.target_count}",
+        # Notify admin
+        if broadcast:
+            try:
+                await self.bot.send_message(
+                    admin_chat_id,
+                    f"✅ <b>Broadcast #{broadcast_id} tugallandi!</b>\n\n"
+                    f"📤 Yuborildi: {broadcast.sent_count}\n"
+                    f"❌ Xatolik: {broadcast.failed_count}\n"
+                    f"🚫 Bloklangan: {broadcast.blocked_count}\n"
+                    f"🎯 Jami maqsad: {broadcast.target_count}",
+                )
+            except Exception:
+                pass
+            logger.info(
+                f"Broadcast {broadcast_id} done: sent={broadcast.sent_count}, "
+                f"fail={broadcast.failed_count}, blocked={broadcast.blocked_count}"
             )
-        except Exception:
-            pass
-
-        logger.info(
-            f"Broadcast {broadcast_id} done: sent={broadcast.sent_count}, "
-            f"fail={broadcast.failed_count}, blocked={broadcast.blocked_count}"
-        )
         return True
 
     async def _progress_updater(self, broadcast_id: int, chat_id: int, message_id: int):
-        """Periodically update progress message every 5 seconds."""
+        """Periodically update progress message every 5 seconds (OWN session per tick)."""
         from bot.keyboards.admin import broadcast_controls
         try:
             while True:
                 await asyncio.sleep(5)
                 try:
-                    bc = await self.broadcast_repo.get_by_id(broadcast_id)
+                    async with AsyncSessionLocal() as session:
+                        repo = BroadcastRepository(session)
+                        bc = await repo.get_by_id(broadcast_id)
                     if not bc or bc.status in (BroadcastStatus.COMPLETED.value, BroadcastStatus.FAILED.value):
                         break
                     pct = (bc.sent_count + bc.failed_count) * 100 // max(bc.target_count, 1)
@@ -184,60 +206,90 @@ class BroadcastEngine:
         except asyncio.CancelledError:
             raise
 
-    async def _worker(self, broadcast_id: int, broadcast: models.Broadcast, queue: asyncio.Queue):
-        """Worker — rate limited message sender."""
+    async def _worker(self, broadcast_id: int, bc_snapshot: dict, queue: asyncio.Queue):
+        """Worker — rate limited message sender. OWN session per worker."""
         rate_limit = 1.0 / self.bot_rate
 
-        while True:
-            if self._cancelled:
-                break
+        async with AsyncSessionLocal() as session:
+            repo = BroadcastRepository(session)
+            user_repo = UserRepository(session)
 
-            user_id = await queue.get()
-            if user_id is None:
-                break
-
-            # Check if broadcast paused/cancelled
-            bc = await self.broadcast_repo.get_by_id(broadcast_id)
-            if bc and bc.status == BroadcastStatus.PAUSED.value:
-                while True:
-                    await asyncio.sleep(2)
-                    bc = await self.broadcast_repo.get_by_id(broadcast_id)
-                    if not bc or bc.status != BroadcastStatus.PAUSED.value:
-                        break
-                if not bc or bc.status == BroadcastStatus.FAILED.value:
+            while True:
+                if self._cancelled:
                     break
 
-            if bc and bc.status == BroadcastStatus.FAILED.value:
-                break
+                user_id = await queue.get()
+                if user_id is None:
+                    break
 
-            try:
-                ok = await self._send_message(broadcast, user_id)
-                if ok:
-                    await self.broadcast_repo.increment_sent(broadcast_id)
-                else:
-                    await self.broadcast_repo.increment_failed(broadcast_id)
-            except Exception as e:
-                logger.error(f"Broadcast worker error for {user_id}: {e}")
-                await self.broadcast_repo.increment_failed(broadcast_id)
-            finally:
-                await asyncio.sleep(rate_limit)
+                # Check pause/cancel state
+                bc = await repo.get_by_id(broadcast_id)
+                if bc and bc.status == BroadcastStatus.PAUSED.value:
+                    while True:
+                        await asyncio.sleep(2)
+                        bc = await repo.get_by_id(broadcast_id)
+                        if not bc or bc.status != BroadcastStatus.PAUSED.value:
+                            break
+                    if not bc or bc.status == BroadcastStatus.FAILED.value:
+                        break
 
-    async def _send_message(self, broadcast: models.Broadcast, user_id: int) -> bool:
-        """Send message to one user — supports all modes and inline buttons."""
+                if bc and bc.status == BroadcastStatus.FAILED.value:
+                    break
+
+                try:
+                    ok = await self._send_message(bc_snapshot, user_id, user_repo)
+                    if ok:
+                        await repo.increment_sent(broadcast_id)
+                    else:
+                        await repo.increment_failed(broadcast_id)
+                    await session.commit()
+                except Exception as e:
+                    logger.error(f"Broadcast worker error for {user_id}: {e}")
+                    try:
+                        await repo.increment_failed(broadcast_id)
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                finally:
+                    await asyncio.sleep(rate_limit)
+
+    async def _send_message(self, bc: dict, user_id: int, user_repo: UserRepository) -> bool:
+        """Send broadcast message to one user. bc is a snapshot dict (not ORM object)."""
         try:
-            kb = self._build_keyboard(broadcast.buttons)
-            text = broadcast.text or ""
-            return await self._send_custom(user_id, text, broadcast, kb)
+            kb = self._build_keyboard(bc.get("buttons"))
+            text = bc.get("text", "") or ""
+
+            if bc.get("media_video"):
+                await self.bot.send_video(user_id, bc["media_video"], caption=text, reply_markup=kb)
+            elif bc.get("media_photo"):
+                await self.bot.send_photo(user_id, bc["media_photo"], caption=text, reply_markup=kb)
+            elif bc.get("media_animation"):
+                await self.bot.send_animation(user_id, bc["media_animation"], caption=text, reply_markup=kb)
+            elif bc.get("media_audio"):
+                await self.bot.send_audio(user_id, bc["media_audio"], caption=text, reply_markup=kb)
+            elif bc.get("media_voice"):
+                await self.bot.send_voice(user_id, bc["media_voice"], caption=text, reply_markup=kb)
+            elif bc.get("media_document"):
+                await self.bot.send_document(user_id, bc["media_document"], caption=text, reply_markup=kb)
+            elif text:
+                await self.bot.send_message(user_id, text, reply_markup=kb)
+            else:
+                return False
+            return True
 
         except TelegramForbiddenError:
-            await self.user_repo.mark_blocked(user_id)
-            await self.session.commit()
+            try:
+                await user_repo.mark_blocked(user_id)
+            except Exception:
+                pass
             return False
         except TelegramBadRequest as e:
             err = str(e).lower()
-            if "blocked" in err or "deactivated" in err:
-                await self.user_repo.mark_blocked(user_id)
-                await self.session.commit()
+            if "blocked" in err or "deactivated" in err or "user is deactivated" in err:
+                try:
+                    await user_repo.mark_blocked(user_id)
+                except Exception:
+                    pass
             logger.warning(f"Bad request to {user_id}: {e}")
             return False
         except TelegramAPIError as e:
@@ -251,37 +303,6 @@ class BroadcastEngine:
             logger.warning(f"API error to {user_id}: {e}")
             return False
 
-    async def _send_custom(self, user_id: int, text: str, bc: models.Broadcast,
-                           kb: Optional[InlineKeyboardMarkup]) -> bool:
-        """Send custom broadcast message with media + buttons."""
-        if bc.media_video:
-            await self.bot.send_video(user_id, bc.media_video, caption=text, reply_markup=kb)
-        elif bc.media_photo:
-            await self.bot.send_photo(user_id, bc.media_photo, caption=text, reply_markup=kb)
-        elif bc.media_animation:
-            await self.bot.send_animation(user_id, bc.media_animation, caption=text, reply_markup=kb)
-        elif bc.media_audio:
-            await self.bot.send_audio(user_id, bc.media_audio, caption=text, reply_markup=kb)
-        elif bc.media_document:
-            await self.bot.send_document(user_id, bc.media_document, caption=text, reply_markup=kb)
-        elif text:
-            await self.bot.send_message(user_id, text, reply_markup=kb)
-        else:
-            return False
-        return True
-
-    async def pause(self, broadcast_id: int) -> bool:
-        await self.broadcast_repo.pause_broadcast(broadcast_id)
-        await self.session.commit()
-        return True
-
-    async def resume(self, broadcast_id: int) -> bool:
-        await self.broadcast_repo.resume_broadcast(broadcast_id)
-        await self.session.commit()
-        return True
-
-    async def cancel(self, broadcast_id: int) -> bool:
+    async def cancel(self):
+        """Mark engine as cancelled — workers will stop on next iteration."""
         self._cancelled = True
-        await self.broadcast_repo.fail_broadcast(broadcast_id)
-        await self.session.commit()
-        return True

@@ -687,19 +687,18 @@ async def fsm_channel_required(call: CallbackQuery, state: FSMContext, session: 
 @router.callback_query(F.data.startswith("bc_mode:"), BroadcastSG.mode)
 async def fsm_bc_mode(call: CallbackQuery, state: FSMContext):
     mode = call.data.split(":")[1]
+    if mode not in ("custom", "rich"):
+        await call.answer("Faqat 'Oddiy' yoki 'Rich' qo'llab-quvvatlanadi", show_alert=True)
+        return
     await state.update_data(mode=mode)
-    if mode == "custom":
-        await call.message.answer("📝 Xabar matnini yoki media (rasm/video/fayl) yuboring:")
-    elif mode == "rich":
+    if mode == "rich":
         await call.message.answer(
             "🎨 <b>Rich rejim</b>\n\n"
             "Avval xabar matnini yoki media yuboring (matn HTML formatda).\n"
             "So'ngra tugmalar qo'shasiz."
         )
-    elif mode == "forward":
-        await call.message.answer("↗️ Forward qilmoqchi bo'lgan xabarni shu chatga forward qiling:")
     else:
-        await call.message.answer("📋 Copy qilmoqchi bo'lgan xabarni shu chatga yuboring:")
+        await call.message.answer("✍️ Xabar matnini yoki media (rasm/video/fayl) yuboring:")
     await state.set_state(BroadcastSG.content)
     await call.answer()
 
@@ -716,22 +715,7 @@ async def fsm_bc_cancel(call: CallbackQuery, state: FSMContext):
 
 @router.message(BroadcastSG.content)
 async def fsm_bc_content(message: Message, state: FSMContext):
-    """Xabar mazmunini qabul qilish."""
-    data = await state.get_data()
-    mode = data.get("mode", "custom")
-
-    if mode == "forward" and message.forward_date:
-        await state.update_data(
-            forward_from_chat_id=message.forward_from_chat.id if message.forward_from_chat else message.chat.id,
-            forward_message_id=message.message_id,
-        )
-        await message.reply(
-            "✅ Forward xabar qabul qilindi.",
-            reply_markup=broadcast_after_content_kb()
-        )
-        await state.set_state(BroadcastSG.buttons)
-        return
-
+    """Xabar mazmunini qabul qilish (custom/rich rejim)."""
     text = message.text or message.caption or ""
     media = {}
     if message.photo:
@@ -744,8 +728,12 @@ async def fsm_bc_content(message: Message, state: FSMContext):
         media["media_animation"] = message.animation.file_id
     elif message.audio:
         media["media_audio"] = message.audio.file_id
-    elif message.sticker:
-        media["media_sticker"] = message.sticker.file_id
+    elif message.voice:
+        media["media_voice"] = message.voice.file_id
+
+    if not text and not media:
+        await message.reply("❌ Bo'sh xabar. Matn yoki media yuboring:")
+        return
 
     await state.update_data(text=text, **media)
     await message.reply(
@@ -775,7 +763,15 @@ async def fsm_bc_add_buttons(call: CallbackQuery, state: FSMContext):
 @router.message(BroadcastSG.buttons)
 async def fsm_bc_buttons_text(message: Message, state: FSMContext):
     """Tugmalar matnini qabul qilish."""
-    kb = parse_buttons_text(message.text or "")
+    text = (message.text or "").strip()
+    # Reply menu tugmasi tasodifan bosilganda — FSM ni clear qilish
+    from bot.keyboards.admin import ADMIN_BUTTONS
+    if text in ADMIN_BUTTONS.values():
+        await state.clear()
+        await message.reply("Broadcast bekor qilindi.")
+        return
+
+    kb = parse_buttons_text(text)
     if kb:
         buttons_data = []
         for row in kb.inline_keyboard:
@@ -793,7 +789,10 @@ async def fsm_bc_buttons_text(message: Message, state: FSMContext):
             reply_markup=broadcast_after_content_kb()
         )
     else:
-        await message.reply("❌ Formatni tekshiring. Har qator: <code>Matn | link</code>")
+        await message.reply(
+            "❌ Format noto'g'ri. Har qator: <code>Matn | https://example.com</code>\n\n"
+            "Faqat to'liq URL (https://...) yoki <code>callback:data</code> qabul qilinadi."
+        )
 
 
 @router.callback_query(F.data == "bc_segment", BroadcastSG.buttons)
@@ -1014,26 +1013,40 @@ async def fsm_bc_confirm(call: CallbackQuery, state: FSMContext, session: AsyncS
     bc_repo = BroadcastRepository(session)
     bc = await bc_repo.create(admin_id=call.from_user.id, mode=data.get("mode", "custom"))
     bc.text = data.get("text")
-    bc.media_photo = data.get("media_photo")
-    bc.media_video = data.get("media_video")
-    bc.media_document = data.get("media_document")
-    bc.media_animation = data.get("media_animation")
+    # Save ALL media types (audio/voice were missing before)
+    for k in ("media_photo", "media_video", "media_animation",
+              "media_audio", "media_voice", "media_document"):
+        setattr(bc, k, data.get(k))
     bc.segment = data.get("segment", {"type": "all"})
     if data.get("buttons"):
         bc.buttons = data["buttons"]
     await session.commit()
+    bc_id = bc.id  # capture before session may be closed
 
-    progress_msg = await call.message.edit_text(
-        f"🚀 <b>Broadcast #{bc.id} ishga tushirildi...</b>\n\nKutilmoqda...",
-        reply_markup=broadcast_controls(bc.id)
-    )
+    try:
+        progress_msg = await call.message.edit_text(
+            f"🚀 <b>Broadcast #{bc_id} ishga tushirildi...</b>\n\nKutilmoqda...",
+            reply_markup=broadcast_controls(bc_id)
+        )
+    except Exception:
+        progress_msg = await call.message.answer(
+            f"🚀 <b>Broadcast #{bc_id} ishga tushirildi...</b>\n\nKutilmoqda...",
+            reply_markup=broadcast_controls(bc_id)
+        )
     await call.answer()
     await state.clear()
 
+    # IMPORTANT: BroadcastEngine owns its OWN sessions — do NOT pass `session` here.
+    # Sharing the FSM-handler's session causes IllegalStateChangeError when middleware closes it.
     from services.broadcaster import BroadcastEngine
     from bot.loader import bot
-    engine = BroadcastEngine(session, bot)
-    asyncio.create_task(engine.start(bc.id, call.from_user.id, progress_chat_id=call.message.chat.id, progress_message_id=progress_msg.message_id))
+    engine = BroadcastEngine(bot)
+    asyncio.create_task(engine.start(
+        bc_id,
+        call.from_user.id,
+        progress_chat_id=call.message.chat.id,
+        progress_message_id=progress_msg.message_id,
+    ))
 
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -11,9 +11,9 @@ from typing import List, Optional
 
 ADMIN_BUTTONS = {
     "stats": "📊 Statistika",
-    "broadcast": "📢 Xabar yuborish",
-    "channels": "🔗 Kanallar",
-    "movies": "🎬 Kinolar",
+    "broadcast": "� Xabar yuborish",
+    "channels": "� Kanal boshqaruvi",
+    "movies": "📢 Kino boshqaruvi",
     "settings": "⚙️ Sozlamalar",
 }
 
@@ -247,12 +247,8 @@ def broadcast_mode_kb() -> InlineKeyboardMarkup:
     """Broadcast rejim tanlash — 2 ustunli + tarix."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✍️ Yangi xabar", callback_data="bc_mode:custom"),
-            InlineKeyboardButton(text="↗️ Forward", callback_data="bc_mode:forward"),
-        ],
-        [
-            InlineKeyboardButton(text="📋 Copy", callback_data="bc_mode:copy"),
-            InlineKeyboardButton(text="🎨 Rich tugmali", callback_data="bc_mode:rich"),
+            InlineKeyboardButton(text="✍️ Oddiy xabar", callback_data="bc_mode:custom"),
+            InlineKeyboardButton(text="🎨 Rich (tugmali)", callback_data="bc_mode:rich"),
         ],
         [
             InlineKeyboardButton(text="📜 Tarix", callback_data="bc_history"),
@@ -520,12 +516,18 @@ def parse_buttons_text(text: str) -> Optional[InlineKeyboardMarkup]:
         btn_text, btn_data = parts[0], parts[1]
         if not btn_text or not btn_data:
             return None
-        if btn_data.startswith("http://") or btn_data.startswith("https://") or btn_data.startswith("tg://"):
+        # Strict URL validation: must start with http(s):// or tg:// AND contain a dot
+        if btn_data.startswith(("http://", "https://", "tg://")):
+            if "." not in btn_data.split("://", 1)[-1]:
+                return None  # invalid URL like https://foo (no domain)
             return InlineKeyboardButton(text=btn_text, url=btn_data)
         if btn_data.startswith("callback:"):
-            return InlineKeyboardButton(text=btn_text, callback_data=btn_data.replace("callback:", "", 1))
-        # Default: treat as URL
-        return InlineKeyboardButton(text=btn_text, url=btn_data)
+            cb = btn_data.replace("callback:", "", 1).strip()
+            if not cb or len(cb) > 64:
+                return None
+            return InlineKeyboardButton(text=btn_text, callback_data=cb)
+        # No fallback — invalid format is rejected
+        return None
 
     for raw_line in text.strip().split("\n"):
         line = raw_line.strip()

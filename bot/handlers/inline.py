@@ -30,7 +30,7 @@ async def inline_search(query: InlineQuery, session: AsyncSession | None = None)
 
     if not text:
         # Bo'sh so'rov — top kinolar
-        movies = await movie_repo.get_top(limit=10)
+        movies = await movie_repo.get_top_movies(limit=10)
         for m in movies:
             results.append(_movie_to_result(m))
         await query.answer(results, cache_time=30, is_personal=False,
