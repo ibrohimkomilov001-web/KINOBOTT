@@ -156,26 +156,34 @@ class UserRepository:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
-    async def get_users_for_broadcast(self, segment: Optional[dict] = None, limit: int = 1000, offset: int = 0) -> List[int]:
+    async def get_users_for_broadcast(self, segment: Optional[dict] = None, limit: int = 100000, offset: int = 0) -> List[int]:
         """Get user IDs for broadcast based on segment filter."""
         query = select(models.User.id).where(
             models.User.is_banned == False,
             models.User.is_bot_blocked == False
         )
 
-        if segment:
-            # Apply segment filters
+        if segment and isinstance(segment, dict):
+            seg_type = segment.get("type", "all")
+
+            if seg_type == "active_7":
+                since = datetime.utcnow() - timedelta(days=7)
+                query = query.where(models.User.last_active_at >= since)
+            elif seg_type == "active_30":
+                since = datetime.utcnow() - timedelta(days=30)
+                query = query.where(models.User.last_active_at >= since)
+            elif seg_type == "premium":
+                query = query.where(models.User.is_premium == True)
+
+            # Legacy filters
             if segment.get("lang"):
                 query = query.where(models.User.lang == segment["lang"])
-            
             if segment.get("active_days"):
                 since = datetime.utcnow() - timedelta(days=segment["active_days"])
                 query = query.where(models.User.last_active_at >= since)
-            
             if segment.get("joined_after"):
                 joined_after = datetime.fromisoformat(segment["joined_after"])
                 query = query.where(models.User.joined_at >= joined_after)
-            
             if segment.get("premium_only"):
                 query = query.where(models.User.is_premium == True)
 

@@ -297,3 +297,42 @@ class Setting(Base):
     value: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Comment(Base):
+    """User comment on movie/series."""
+    __tablename__ = "comments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"))
+    movie_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=True)
+    series_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("series.id", ondelete="CASCADE"), nullable=True)
+    text: Mapped[str] = mapped_column(Text)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    tg_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped["User"] = relationship("User")
+    movie: Mapped[Optional["Movie"]] = relationship("Movie")
+    series: Mapped[Optional["Series"]] = relationship("Series")
+
+    __table_args__ = (
+        Index("ix_comment_movie_approved", "movie_id", "is_approved"),
+    )
+
+
+class Ad(Base):
+    """Advertisement/promotion."""
+    __tablename__ = "ads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admin_id: Mapped[int] = mapped_column(BigInteger)
+    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    media_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    media_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    buttons: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    views_count: Mapped[int] = mapped_column(Integer, default=0)
+    clicks_count: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

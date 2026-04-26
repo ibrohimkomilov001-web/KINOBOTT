@@ -1,6 +1,7 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command, CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from db.repositories.user_repo import UserRepository
 from db.repositories.movie_repo import MovieRepository
 from db.repositories.series_repo import SeriesRepository
@@ -23,9 +24,18 @@ async def cmd_start(message: Message, session: AsyncSession | None = None):
 
     user_repo = UserRepository(session)
 
-    # Check deep link (e.g. /start code_avatar2)
+    # Check deep link (e.g. /start code_avatar2 or /start ref_123456)
     args = message.text.split(maxsplit=1)
     deep_link = args[1].strip() if len(args) > 1 else None
+
+    # Extract referrer before creating user
+    referrer_id = None
+    if deep_link and deep_link.startswith("ref_"):
+        try:
+            referrer_id = int(deep_link.replace("ref_", ""))
+        except ValueError:
+            pass
+        deep_link = None  # ref link is not a movie code
 
     db_user = await user_repo.get_or_create(
         user_id=message.from_user.id,
@@ -33,6 +43,10 @@ async def cmd_start(message: Message, session: AsyncSession | None = None):
         first_name=message.from_user.first_name,
         lang=message.from_user.language_code or "uz"
     )
+
+    # Save referrer (only for new users)
+    if referrer_id and not db_user.referrer_id and referrer_id != message.from_user.id:
+        db_user.referrer_id = referrer_id
     await session.commit()
 
     # If deep link contains a movie code, send the movie
@@ -41,6 +55,12 @@ async def cmd_start(message: Message, session: AsyncSession | None = None):
         movie = await movie_repo.get_by_code(deep_link)
         if movie:
             await _send_movie(message, movie, movie_repo, db_user)
+            return
+        # Try series code
+        series_repo = SeriesRepository(session)
+        series = await series_repo.get_by_code(deep_link)
+        if series:
+            await _send_series(message, series, series_repo)
             return
 
     text = (
@@ -192,8 +212,8 @@ async def _send_movie(message: Message, movie: models.Movie, movie_repo: MovieRe
         await message.reply("Kechirasiz, videoni yuborishda xato yuz berdi.")
 
 
-async def _send_series(message: Message, series):
-    """Send series info."""
+async def _send_series(message: Message, series, series_repo: SeriesRepository | None = None):
+    """Send series info with season/episode buttons."""
     rating = f"{series.rating_avg:.1f}" if series.rating_avg else "0"
     genres = ", ".join(series.genres) if series.genres else "—"
     text = (
@@ -204,4 +224,79 @@ async def _send_series(message: Message, series):
         f"⭐ Reyting: {rating}/5 ({series.rating_count} ovoz)\n"
         f"👁 Ko'rishlar: {series.views}"
     )
-    await message.answer(text)
+    kb = None
+    if series_repo:
+        seasons = await series_repo.get_seasons(series.id)
+        if seasons:
+            builder = InlineKeyboardBuilder()
+            for sn in seasons:
+                builder.row(InlineKeyboardButton(
+                    text=f"📂 Sezon {sn.season_number}",
+                    callback_data=f"user_season:{series.id}:{sn.id}"
+                ))
+            kb = builder.as_markup()
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("user_season:"))
+async def cb_user_season(call: CallbackQuery, session: AsyncSession | None = None):
+    """Show episodes for a season."""
+    if not session:
+        return await call.answer()
+    parts = call.data.split(":")
+    series_id, season_id = int(parts[1]), int(parts[2])
+    repo = SeriesRepository(session)
+    episodes = await repo.get_episodes(season_id)
+    if not episodes:
+        return await call.answer("Epizodlar topilmadi", show_alert=True)
+    builder = InlineKeyboardBuilder()
+    for ep in episodes:
+        title = ep.title or f"Epizod {ep.episode_number}"
+        builder.row(InlineKeyboardButton(
+            text=f"▶️ {ep.episode_number}. {title}",
+            callback_data=f"user_ep:{ep.id}"
+        ))
+    builder.row(InlineKeyboardButton(text="⬅️ Orqaga", callback_data=f"user_series_back:{series_id}"))
+    await call.message.edit_reply_markup(reply_markup=builder.as_markup())
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("user_ep:"))
+async def cb_user_episode(call: CallbackQuery, session: AsyncSession | None = None):
+    """Send episode video."""
+    if not session:
+        return await call.answer()
+    from sqlalchemy import select
+    ep_id = int(call.data.split(":")[1])
+    result = await session.execute(select(models.Episode).where(models.Episode.id == ep_id))
+    ep = result.scalars().first()
+    if not ep:
+        return await call.answer("Epizod topilmadi", show_alert=True)
+    title = ep.title or f"Epizod {ep.episode_number}"
+    try:
+        await call.message.answer_video(
+            video=ep.video_file_id,
+            caption=f"📺 {title}"
+        )
+    except Exception as e:
+        logger.error(f"Error sending episode {ep_id}: {e}")
+        await call.answer("Video yuborishda xatolik", show_alert=True)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("user_series_back:"))
+async def cb_user_series_back(call: CallbackQuery, session: AsyncSession | None = None):
+    """Go back to season list."""
+    if not session:
+        return await call.answer()
+    series_id = int(call.data.split(":")[1])
+    repo = SeriesRepository(session)
+    seasons = await repo.get_seasons(series_id)
+    builder = InlineKeyboardBuilder()
+    for sn in seasons:
+        builder.row(InlineKeyboardButton(
+            text=f"📂 Sezon {sn.season_number}",
+            callback_data=f"user_season:{series_id}:{sn.id}"
+        ))
+    await call.message.edit_reply_markup(reply_markup=builder.as_markup())
+    await call.answer()

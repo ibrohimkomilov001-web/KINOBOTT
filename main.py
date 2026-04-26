@@ -17,6 +17,7 @@ from bot.handlers import admin as admin_handlers
 from bot.handlers import user_callbacks
 from bot.handlers import fsm_handlers
 from bot.handlers import user as user_handlers
+from bot.handlers import inline as inline_handlers
 
 logger = setup_logging()
 
@@ -78,6 +79,7 @@ async def main():
     dp.include_router(admin_handlers.router)
     dp.include_router(fsm_handlers.router)
     dp.include_router(user_callbacks.router)
+    dp.include_router(inline_handlers.router)
     dp.include_router(user_handlers.router)
 
     # Start scheduler

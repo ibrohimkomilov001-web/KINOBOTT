@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc, and_, or_
+from sqlalchemy import select, func, desc, and_, or_, Integer
 from datetime import datetime
 from db import models
 from typing import Optional, List
@@ -126,11 +126,30 @@ class MovieRepository:
             await self.session.flush()
         return movie
 
+    async def get_next_code(self) -> str:
+        """Get next auto-increment numeric code."""
+        stmt = select(func.max(
+            func.cast(models.Movie.code, Integer)
+        )).where(models.Movie.code.regexp_match(r'^\d+$'))
+        result = await self.session.execute(stmt)
+        max_code = result.scalar()
+        return str((max_code or 0) + 1)
+
     async def get_total_count(self) -> int:
         """Get total movie count."""
         stmt = select(func.count(models.Movie.id))
         result = await self.session.execute(stmt)
         return result.scalar() or 0
+
+    async def get_all_paginated(self, page: int = 0, per_page: int = 10):
+        """Get paginated movies + total pages."""
+        total = await self.get_total_count()
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        stmt = (select(models.Movie)
+                .order_by(desc(models.Movie.id))
+                .offset(page * per_page).limit(per_page))
+        result = await self.session.execute(stmt)
+        return result.scalars().all(), total_pages
 
     async def get_all(self, limit: int = 100, offset: int = 0) -> List[models.Movie]:
         """Get all movies."""

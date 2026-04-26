@@ -23,6 +23,8 @@ async def create_default_settings():
             "allow_paid_broadcast": "false",
             "broadcast_bot_rate": "28",
             "broadcast_userbot_rate": "20",
+            "auto_code": "true",
+            "base_channel_id": "",
         }
         
         for key, value in default_settings.items():

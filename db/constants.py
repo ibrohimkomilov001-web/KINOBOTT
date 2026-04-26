@@ -9,6 +9,10 @@ class SettingKey(str, Enum):
     ALLOW_PAID_BROADCAST = "allow_paid_broadcast"
     BROADCAST_BOT_RATE = "broadcast_bot_rate"
     BROADCAST_USERBOT_RATE = "broadcast_userbot_rate"
+    AUTO_CODE = "auto_code"
+    BASE_CHANNEL_ID = "base_channel_id"
+    NEXT_MOVIE_CODE = "next_movie_code"
+    NEXT_SERIES_CODE = "next_series_code"
 
 
 class AdminRole(str, Enum):
